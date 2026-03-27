@@ -100,6 +100,103 @@
           </a-spin>
         </div>
       </a-tab-pane>
+
+      <!-- Tab 3: Product Knowledge Base -->
+      <a-tab-pane key="knowledge" tab="产品知识库">
+        <div class="tab-content">
+          <div class="knowledge-section">
+            <div class="knowledge-hint">
+              <InfoCircleOutlined style="color:#1677ff" />
+              <span>AI回复评论时会参考以下产品知识，请填写完整以提升回复质量</span>
+            </div>
+
+            <a-spin :spinning="kbLoading">
+              <div class="knowledge-form">
+                <div class="knowledge-group">
+                  <div class="knowledge-group__title">品牌信息</div>
+                  <div class="knowledge-row">
+                    <label>品牌名称</label>
+                    <a-input v-model:value="kb.brand_name" placeholder="如：雪玲妃" />
+                  </div>
+                  <div class="knowledge-row">
+                    <label>品牌口号</label>
+                    <a-input v-model:value="kb.brand_slogan" placeholder="如：天然植萃护肤专家" />
+                  </div>
+                </div>
+
+                <div class="knowledge-group">
+                  <div class="knowledge-group__title">目标用户画像</div>
+                  <div class="knowledge-row">
+                    <label>人群特征</label>
+                    <a-textarea v-model:value="kb.target_audience" :rows="2" placeholder="如：18-35岁女性，学生党和年轻白领为主，注重性价比，偏好国货品牌" />
+                  </div>
+                  <div class="knowledge-row">
+                    <label>用户痛点</label>
+                    <a-textarea v-model:value="kb.audience_pain_points" :rows="2" placeholder="如：油皮出油严重、毛孔粗大、黑头多、痘痘反复、卸妆不干净" />
+                  </div>
+                  <div class="knowledge-row">
+                    <label>用户偏好</label>
+                    <a-textarea v-model:value="kb.audience_preferences" :rows="2" placeholder="如：喜欢清爽不油腻的质地、关注成分安全、偏好氨基酸洁面、看重性价比" />
+                  </div>
+                </div>
+
+                <div class="knowledge-group">
+                  <div class="knowledge-group__title">
+                    产品列表
+                    <a-button type="link" size="small" @click="addProduct">
+                      <template #icon><PlusOutlined /></template>
+                      添加产品
+                    </a-button>
+                  </div>
+                  <div v-for="(p, idx) in kb.products" :key="idx" class="product-card">
+                    <div class="product-card__header">
+                      <span class="product-card__num">产品 {{ idx + 1 }}</span>
+                      <a-button type="link" size="small" danger @click="kb.products.splice(idx, 1)">删除</a-button>
+                    </div>
+                    <div class="knowledge-row">
+                      <label>产品名称</label>
+                      <a-input v-model:value="p.name" placeholder="如：雪玲妃百合洗面奶" />
+                    </div>
+                    <div class="knowledge-row">
+                      <label>产品功效</label>
+                      <a-textarea v-model:value="p.efficacy" :rows="2" placeholder="如：深层清洁、控油祛痘、收缩毛孔、温和卸妆" />
+                    </div>
+                    <div class="knowledge-row">
+                      <label>核心卖点</label>
+                      <a-textarea v-model:value="p.selling_points" :rows="2" placeholder="如：氨基酸配方、百合精华、洗卸合一、孕妇可用、60天见效" />
+                    </div>
+                    <div class="knowledge-row">
+                      <label>价格区间</label>
+                      <a-input v-model:value="p.price" placeholder="如：39.9-69.9元" />
+                    </div>
+                  </div>
+                </div>
+
+                <div class="knowledge-group">
+                  <div class="knowledge-group__title">AI回复设置</div>
+                  <div class="knowledge-row">
+                    <label>回复人设</label>
+                    <a-textarea v-model:value="kb.reply_personality" :rows="2" placeholder="如：你是雪玲妃品牌的贴心护肤顾问，专业但亲切，像闺蜜一样给建议" />
+                  </div>
+                  <div class="knowledge-row">
+                    <label>回复规则</label>
+                    <a-textarea v-model:value="kb.reply_rules" :rows="3" placeholder="如：1.好评要感谢并推荐搭配使用&#10;2.差评要先道歉再给解决方案&#10;3.咨询肤质问题要推荐对应产品&#10;4.不要过度营销" />
+                  </div>
+                </div>
+
+                <div class="knowledge-actions">
+                  <a-button type="primary" :loading="kbSaving" @click="saveKnowledge">
+                    保存知识库
+                  </a-button>
+                  <span v-if="kbLastSaved" class="knowledge-saved-time">
+                    上次保存: {{ kbLastSaved }}
+                  </span>
+                </div>
+              </div>
+            </a-spin>
+          </div>
+        </div>
+      </a-tab-pane>
     </a-tabs>
 
     <!-- Blocked Words Section -->
@@ -245,7 +342,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { message, Modal } from 'ant-design-vue'
-import { PlusOutlined, RobotOutlined, DownOutlined, UpOutlined } from '@ant-design/icons-vue'
+import { PlusOutlined, RobotOutlined, DownOutlined, UpOutlined, InfoCircleOutlined } from '@ant-design/icons-vue'
 import request from '@/utils/request'
 
 const isMobile = ref(window.innerWidth < 768)
@@ -255,6 +352,7 @@ onMounted(() => {
   loadScripts('comment')
   loadScripts('reply')
   loadBlockedWords()
+  loadKnowledge()
 })
 onBeforeUnmount(() => { window.removeEventListener('resize', onResize) })
 
@@ -438,6 +536,74 @@ async function addAiScriptToLib(item) {
     message.success('已添加到话术库')
     loadScripts(aiModalCategory.value)
   } catch (e) { console.error(e) }
+}
+
+// ===== Product Knowledge Base =====
+const kbLoading = ref(false)
+const kbSaving = ref(false)
+const kbLastSaved = ref('')
+const kb = reactive({
+  brand_name: '',
+  brand_slogan: '',
+  target_audience: '',
+  audience_pain_points: '',
+  audience_preferences: '',
+  products: [],
+  reply_personality: '',
+  reply_rules: '',
+})
+
+function addProduct() {
+  kb.products.push({ name: '', efficacy: '', selling_points: '', price: '' })
+}
+
+async function loadKnowledge() {
+  kbLoading.value = true
+  try {
+    const res = await request.get('/api/operations/product-knowledge')
+    if (res.data?.code === 0 && res.data.data) {
+      const d = res.data.data
+      kb.brand_name = d.brand_name || ''
+      kb.brand_slogan = d.brand_slogan || ''
+      kb.target_audience = d.target_audience || ''
+      kb.audience_pain_points = d.audience_pain_points || ''
+      kb.audience_preferences = d.audience_preferences || ''
+      kb.products = d.products || []
+      kb.reply_personality = d.reply_personality || ''
+      kb.reply_rules = d.reply_rules || ''
+      if (d.updated_at) kbLastSaved.value = d.updated_at
+    }
+  } catch (e) {
+    console.error(e)
+  } finally {
+    kbLoading.value = false
+  }
+}
+
+async function saveKnowledge() {
+  kbSaving.value = true
+  try {
+    const res = await request.post('/api/operations/product-knowledge', {
+      brand_name: kb.brand_name,
+      brand_slogan: kb.brand_slogan,
+      target_audience: kb.target_audience,
+      audience_pain_points: kb.audience_pain_points,
+      audience_preferences: kb.audience_preferences,
+      products: kb.products,
+      reply_personality: kb.reply_personality,
+      reply_rules: kb.reply_rules,
+    })
+    if (res.data?.code === 0) {
+      message.success('产品知识库保存成功')
+      kbLastSaved.value = new Date().toLocaleString()
+    } else {
+      message.error(res.data?.msg || '保存失败')
+    }
+  } catch (e) {
+    message.error('保存失败')
+  } finally {
+    kbSaving.value = false
+  }
 }
 
 // ===== Blocked Words =====
@@ -645,6 +811,77 @@ async function removeBlockedWord(id) {
   gap: 8px;
   margin-top: 12px;
   align-items: center;
+}
+
+/* Knowledge Base */
+.knowledge-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #e6f4ff;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #1677ff;
+  margin-bottom: 16px;
+}
+.knowledge-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.knowledge-group {
+  background: #fff;
+  border-radius: 10px;
+  padding: 16px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+}
+.knowledge-group__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1a1a1a;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.knowledge-row {
+  margin-bottom: 12px;
+}
+.knowledge-row label {
+  display: block;
+  font-size: 13px;
+  color: #595959;
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+.product-card {
+  background: #fafafa;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+.product-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.product-card__num {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1677ff;
+}
+.knowledge-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+}
+.knowledge-saved-time {
+  font-size: 12px;
+  color: #8c8c8c;
 }
 
 @media (min-width: 768px) {

@@ -238,7 +238,62 @@ async function generateReply(commentText, category, replyStyle) {
     const baseUrl = process.env.OPENAI_BASE_URL || 'https://api.aiclaude.xyz/v1';
     const model = process.env.OPENAI_MODEL || 'gpt-4o';
 
-    const systemPrompt = `你是一个品牌运营助手，需要回复抖音视频下的用户评论。要求：1.自然亲切不生硬 2.不超过50字 3.不包含联系方式/导流信息 4.不使用emoji 5.针对${category}类评论回复。回复风格：${replyStyle}。只返回回复内容，不要其他。`;
+    // 获取产品知识库
+    let knowledgeContext = '';
+    try {
+      const [rows] = await db.query('SELECT * FROM ops_product_knowledge LIMIT 1');
+      if (rows && rows.length > 0) {
+        const kb = rows[0];
+        let products = kb.products;
+        if (typeof products === 'string') {
+          try { products = JSON.parse(products); } catch { products = []; }
+        }
+
+        const productLines = (products || []).map(p =>
+          `- ${p.name}：功效[${p.efficacy || ''}]，卖点[${p.selling_points || ''}]，价格[${p.price || ''}]`
+        ).join('\n');
+
+        knowledgeContext = `
+【品牌信息】
+品牌名称：${kb.brand_name || ''}
+品牌口号：${kb.brand_slogan || ''}
+
+【目标用户画像】
+人群特征：${kb.target_audience || ''}
+用户痛点：${kb.audience_pain_points || ''}
+用户偏好：${kb.audience_preferences || ''}
+
+【产品信息】
+${productLines || '暂无产品信息'}
+
+【回复人设】
+${kb.reply_personality || '亲切专业的品牌客服'}
+
+【回复规则】
+${kb.reply_rules || ''}
+`;
+      }
+    } catch (e) {
+      logger.warn('[CommentSync] 获取产品知识库失败', { error: e.message });
+    }
+
+    const systemPrompt = `你是一个品牌运营助手，负责回复抖音视频下的用户评论。
+
+${knowledgeContext ? knowledgeContext : ''}
+
+【回复要求】
+1. 根据用户评论内容和产品知识，给出有针对性的专业回复
+2. 不超过50字，自然亲切不生硬
+3. 不包含联系方式、导流信息、外部链接
+4. 不使用emoji和表情符号
+5. 当前评论分类：${category}
+6. 回复风格：${replyStyle}
+7. 如果用户问产品功效/成分/价格，结合产品知识库中的信息回答
+8. 如果是好评，表达感谢并强调产品核心卖点
+9. 如果是差评，先共情再给出解决方案
+10. 如果是咨询，专业解答并引导用户关注产品优势
+
+只返回回复内容，不要任何前缀或解释。`;
 
     const resp = await axios.post(`${baseUrl}/chat/completions`, {
       model,

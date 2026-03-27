@@ -111,6 +111,19 @@ const RISK_LIMITS = {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     )`);
 
+    await db.query(`CREATE TABLE IF NOT EXISTS ops_product_knowledge (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      brand_name VARCHAR(200) DEFAULT '',
+      brand_slogan VARCHAR(500) DEFAULT '',
+      target_audience TEXT,
+      audience_pain_points TEXT,
+      audience_preferences TEXT,
+      products JSON,
+      reply_personality TEXT,
+      reply_rules TEXT,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )`);
+
     logger.info('[Operations] 表结构就绪');
   } catch (e) {
     logger.error('[Operations] 建表失败', { error: e.message });
@@ -1047,6 +1060,47 @@ router.post('/comments/:commentId/reply', auth(), async (req, res) => {
     res.json({ code: 0, data: result, msg: '回复成功' });
   } catch (e) {
     logger.error('[Operations] manual reply error', { error: e.message });
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// ============ Product Knowledge Base ============
+router.get('/product-knowledge', auth, async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT * FROM ops_product_knowledge ORDER BY id LIMIT 1');
+    if (rows && rows.length > 0) {
+      const data = rows[0];
+      if (typeof data.products === 'string') {
+        try { data.products = JSON.parse(data.products); } catch { data.products = []; }
+      }
+      res.json({ code: 0, data });
+    } else {
+      res.json({ code: 0, data: null });
+    }
+  } catch (e) {
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+router.post('/product-knowledge', auth, async (req, res) => {
+  try {
+    const { brand_name, brand_slogan, target_audience, audience_pain_points, audience_preferences, products, reply_personality, reply_rules } = req.body;
+    const productsJson = JSON.stringify(products || []);
+
+    const [existing] = await db.query('SELECT id FROM ops_product_knowledge LIMIT 1');
+    if (existing && existing.length > 0) {
+      await db.query(
+        `UPDATE ops_product_knowledge SET brand_name=?, brand_slogan=?, target_audience=?, audience_pain_points=?, audience_preferences=?, products=?, reply_personality=?, reply_rules=?, updated_at=NOW() WHERE id=?`,
+        [brand_name || '', brand_slogan || '', target_audience || '', audience_pain_points || '', audience_preferences || '', productsJson, reply_personality || '', reply_rules || '', existing[0].id]
+      );
+    } else {
+      await db.query(
+        `INSERT INTO ops_product_knowledge (brand_name, brand_slogan, target_audience, audience_pain_points, audience_preferences, products, reply_personality, reply_rules) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [brand_name || '', brand_slogan || '', target_audience || '', audience_pain_points || '', audience_preferences || '', productsJson, reply_personality || '', reply_rules || '']
+      );
+    }
+    res.json({ code: 0, msg: '保存成功' });
+  } catch (e) {
     res.json({ code: 500, msg: e.message });
   }
 });

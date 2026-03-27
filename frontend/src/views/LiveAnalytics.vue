@@ -149,18 +149,17 @@ const loadRooms = async () => {
   }
 }
 
-// 按时间粒度聚合数据（累计值 → 增量值）
+// 按时间粒度聚合数据（累计值 → 平滑增量值）
 const aggregateByGranularity = (rawData) => {
   const minsMap = { '5分钟': 5, '15分钟': 15, '30分钟': 30, '1小时': 60 }
   const mins = minsMap[granularity.value] || 5
 
-  // Step 1: 按时段分桶，每个桶取最后一条记录的累计值
+  // Step 1: 按时段分桶，每个桶取最后一条的累计值
   const buckets = {}
   for (const row of rawData) {
     const t = dayjs(row.recorded_at)
     const bucket = Math.floor(t.minute() / mins) * mins
     const key = t.format('HH') + ':' + String(bucket).padStart(2, '0')
-    // 始终覆盖为最新的（最后一条），因为数据是按时间排序的累计值
     buckets[key] = {
       period: key,
       orders: Number(row.order_count || 0),
@@ -177,53 +176,56 @@ const aggregateByGranularity = (rawData) => {
     }
   }
 
-  // Step 2: 排序后计算相邻时段的增量
   const sorted = Object.values(buckets).sort((a, b) => a.period.localeCompare(b.period))
+  const firstIdx = sorted.findIndex(s => s.orders > 0 || s.gmv > 0 || s.cost > 0)
+  if (firstIdx < 0) return []
 
-  // 找到第一个有实际数据的时段（跳过全0的早期时段）
-  const firstDataIdx = sorted.findIndex(s => s.orders > 0 || s.gmv > 0 || s.cost > 0)
-  if (firstDataIdx < 0) return []
+  // Step 2: 找出累计值有变化的"锚点"，将增量平滑分摊到中间的空槽
+  const fields = ['orders', 'gmv', 'cost', 'paid_uv', 'product_click', 'cart', 'paid_gmv']
+  const deltas = sorted.map(() => ({}))
 
-  const result = []
-  for (let i = firstDataIdx; i < sorted.length; i++) {
-    const cur = sorted[i]
-    const prev = i > firstDataIdx ? sorted[i - 1] : null
+  for (const field of fields) {
+    let lastChangeIdx = firstIdx
+    let lastVal = sorted[firstIdx][field]
+    // 第一个时段的值作为初始增量
+    deltas[firstIdx][field] = 0
 
-    const dOrders = prev ? Math.max(0, cur.orders - prev.orders) : 0
-    const dGmv = prev ? Math.max(0, cur.gmv - prev.gmv) : 0
-    const dCost = prev ? Math.max(0, cur.cost - prev.cost) : 0
-    const dPaidUv = prev ? Math.max(0, cur.paid_uv - prev.paid_uv) : 0
-    const dClick = prev ? Math.max(0, cur.product_click - prev.product_click) : 0
-    const dCart = prev ? Math.max(0, cur.cart - prev.cart) : 0
-    const dPaidGmv = prev ? Math.max(0, cur.paid_gmv - prev.paid_gmv) : 0
-
-    // 第一个时段：用总量除以已过时段数来均摊
-    if (!prev && i === firstDataIdx) {
-      const elapsed = Math.max(1, i + 1)
-      result.push({
-        ...cur,
-        delta_orders: Math.round(cur.orders / elapsed),
-        delta_gmv: cur.gmv / elapsed,
-        delta_cost: cur.cost / elapsed,
-        delta_paid_uv: Math.round(cur.paid_uv / elapsed),
-        delta_click: Math.round(cur.product_click / elapsed),
-        delta_cart: Math.round(cur.cart / elapsed),
-        delta_paid_gmv: cur.paid_gmv / elapsed,
-        roi: cur.cost > 0 ? (cur.gmv / cur.cost).toFixed(2) : '-',
-      })
-      continue
+    for (let i = firstIdx + 1; i < sorted.length; i++) {
+      const curVal = sorted[i][field]
+      const diff = curVal - lastVal
+      if (diff > 0) {
+        // 有变化：平均分摊到 lastChangeIdx+1 ~ i 的所有时段
+        const slots = i - lastChangeIdx
+        const perSlot = diff / slots
+        for (let j = lastChangeIdx + 1; j <= i; j++) {
+          deltas[j][field] = Math.round(perSlot * 100) / 100
+        }
+        lastChangeIdx = i
+        lastVal = curVal
+      } else {
+        deltas[i][field] = 0
+      }
     }
+  }
 
+  // Step 3: 构建结果，跳过首个时段之前的空数据
+  const result = []
+  for (let i = firstIdx; i < sorted.length; i++) {
+    const cur = sorted[i]
+    const d = deltas[i]
+    const dGmv = d.gmv || 0
+    const dCost = d.cost || 0
+    const dOrders = Math.round(d.orders || 0)
     result.push({
       ...cur,
       delta_orders: dOrders,
       delta_gmv: dGmv,
       delta_cost: dCost,
-      delta_paid_uv: dPaidUv,
-      delta_click: dClick,
-      delta_cart: dCart,
-      delta_paid_gmv: dPaidGmv,
-      roi: dCost > 0 ? (dGmv / dCost).toFixed(2) : '-',
+      delta_paid_uv: Math.round(d.paid_uv || 0),
+      delta_click: Math.round(d.product_click || 0),
+      delta_cart: Math.round(d.cart || 0),
+      delta_paid_gmv: d.paid_gmv || 0,
+      roi: dCost > 0 ? (dGmv / dCost).toFixed(2) : (cur.cost > 0 ? cur.roi_raw.toFixed(2) : '-'),
     })
   }
   return result
