@@ -238,8 +238,48 @@ async function generateReply(commentText, category, replyStyle) {
     const baseUrl = process.env.OPENAI_BASE_URL || 'https://api.aiclaude.xyz/v1';
     const model = process.env.OPENAI_MODEL || 'gpt-4o';
 
-    // 获取产品知识库
-    let knowledgeContext = '';
+    // ===== 1. 从系统"产品人群画像"自动读取真实数据 =====
+    let audienceContext = '';
+    try {
+      // 性别分布
+      const [genderRows] = await db.query(
+        `SELECT dimension_key, SUM(pay_order_count) as cnt FROM qc_audience_stats WHERE dimension='gender' GROUP BY dimension_key ORDER BY cnt DESC`
+      );
+      const totalGender = genderRows.reduce((s, r) => s + parseInt(r.cnt || 0), 0);
+      const genderText = genderRows.map(r => `${r.dimension_key}${totalGender ? Math.round(parseInt(r.cnt) / totalGender * 100) : 0}%`).join('、');
+
+      // 年龄分布（取前3）
+      const [ageRows] = await db.query(
+        `SELECT dimension_key, SUM(pay_order_count) as cnt FROM qc_audience_stats WHERE dimension='age' GROUP BY dimension_key ORDER BY cnt DESC LIMIT 3`
+      );
+      const ageText = ageRows.map(r => r.dimension_key).join('、');
+
+      // 地域分布（取前5）
+      const [regionRows] = await db.query(
+        `SELECT dimension_key, SUM(pay_order_count) as cnt FROM qc_audience_stats WHERE dimension='region' GROUP BY dimension_key ORDER BY cnt DESC LIMIT 5`
+      );
+      const regionText = regionRows.map(r => r.dimension_key).join('、');
+
+      // 购买偏好
+      const [interestRows] = await db.query(
+        `SELECT dimension_key, SUM(pay_order_count) as cnt FROM qc_audience_stats WHERE dimension='interest' GROUP BY dimension_key ORDER BY cnt DESC LIMIT 5`
+      );
+      const interestText = interestRows.map(r => r.dimension_key).join('、');
+
+      if (genderRows.length > 0 || ageRows.length > 0) {
+        audienceContext = `
+【用户画像（系统真实数据）】
+性别分布：${genderText || '未知'}
+核心年龄段：${ageText || '未知'}
+主要地区：${regionText || '未知'}
+购买偏好：${interestText || '未知'}`;
+      }
+    } catch (e) {
+      logger.warn('[CommentSync] 读取系统画像数据失败', { error: e.message });
+    }
+
+    // ===== 2. 从"产品知识库"读取手动配置的品牌和产品信息 =====
+    let productContext = '';
     try {
       const [rows] = await db.query('SELECT * FROM ops_product_knowledge LIMIT 1');
       if (rows && rows.length > 0) {
@@ -248,52 +288,49 @@ async function generateReply(commentText, category, replyStyle) {
         if (typeof products === 'string') {
           try { products = JSON.parse(products); } catch { products = []; }
         }
-
         const productLines = (products || []).map(p =>
           `- ${p.name}：功效[${p.efficacy || ''}]，卖点[${p.selling_points || ''}]，价格[${p.price || ''}]`
         ).join('\n');
 
-        knowledgeContext = `
+        productContext = `
 【品牌信息】
-品牌名称：${kb.brand_name || ''}
+品牌名称：${kb.brand_name || '雪玲妃'}
 品牌口号：${kb.brand_slogan || ''}
 
-【目标用户画像】
-人群特征：${kb.target_audience || ''}
-用户痛点：${kb.audience_pain_points || ''}
-用户偏好：${kb.audience_preferences || ''}
-
 【产品信息】
-${productLines || '暂无产品信息'}
+${productLines || ''}
+
+【用户痛点】
+${kb.audience_pain_points || ''}
 
 【回复人设】
-${kb.reply_personality || '亲切专业的品牌客服'}
+${kb.reply_personality || '亲切专业的品牌护肤顾问，像闺蜜一样给用户建议'}
 
 【回复规则】
-${kb.reply_rules || ''}
-`;
+${kb.reply_rules || ''}`;
       }
     } catch (e) {
       logger.warn('[CommentSync] 获取产品知识库失败', { error: e.message });
     }
 
-    const systemPrompt = `你是一个品牌运营助手，负责回复抖音视频下的用户评论。
-
-${knowledgeContext ? knowledgeContext : ''}
+    // ===== 3. 构建最终Prompt =====
+    const systemPrompt = `你是品牌的抖音运营助手，负责回复视频下的用户评论。
+${audienceContext}
+${productContext}
 
 【回复要求】
-1. 根据用户评论内容和产品知识，给出有针对性的专业回复
-2. 不超过50字，自然亲切不生硬
-3. 不包含联系方式、导流信息、外部链接
-4. 不使用emoji和表情符号
-5. 当前评论分类：${category}
-6. 回复风格：${replyStyle}
-7. 如果用户问产品功效/成分/价格，结合产品知识库中的信息回答
-8. 如果是好评，表达感谢并强调产品核心卖点
-9. 如果是差评，先共情再给出解决方案
-10. 如果是咨询，专业解答并引导用户关注产品优势
+1. 根据用户评论内容，结合产品功效和卖点，给出有针对性的回复
+2. 了解我们的用户画像，用她们喜欢的语气说话（年轻女性为主，注重性价比）
+3. 不超过50字，自然亲切不生硬，像真人而非机器人
+4. 不包含联系方式、导流信息、外部链接
+5. 不使用emoji和表情符号
+6. 当前评论分类：${category}，回复风格：${replyStyle}
+7. 好评→感谢+强调产品核心卖点，让其他用户也想买
+8. 差评→先共情道歉+给解决方案（如联系客服换货）
+9. 咨询→专业解答产品功效/成分/适用肤质，引导下单
+10. 疑问→耐心回答，消除顾虑
 
-只返回回复内容，不要任何前缀或解释。`;
+只返回回复内容，不要任何前缀、引号或解释。`;
 
     const resp = await axios.post(`${baseUrl}/chat/completions`, {
       model,

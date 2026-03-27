@@ -107,7 +107,7 @@
           <div class="knowledge-section">
             <div class="knowledge-hint">
               <InfoCircleOutlined style="color:#1677ff" />
-              <span>AI回复评论时会参考以下产品知识，请填写完整以提升回复质量</span>
+              <span>用户画像（性别/年龄/地域/偏好）已自动从「产品人群画像」读取，以下只需配置品牌和产品信息</span>
             </div>
 
             <a-spin :spinning="kbLoading">
@@ -124,19 +124,19 @@
                   </div>
                 </div>
 
-                <div class="knowledge-group">
-                  <div class="knowledge-group__title">目标用户画像</div>
-                  <div class="knowledge-row">
-                    <label>人群特征</label>
-                    <a-textarea v-model:value="kb.target_audience" :rows="2" placeholder="如：18-35岁女性，学生党和年轻白领为主，注重性价比，偏好国货品牌" />
+                <div class="knowledge-group" style="background:#f6ffed;border:1px solid #b7eb8f">
+                  <div class="knowledge-group__title" style="color:#52c41a">
+                    用户画像（自动读取）
                   </div>
-                  <div class="knowledge-row">
-                    <label>用户痛点</label>
+                  <div style="font-size:13px;color:#595959;line-height:1.8">
+                    系统已自动从「产品人群画像」读取真实数据：<br/>
+                    · 性别/年龄/地域分布<br/>
+                    · 购买偏好和消费行为<br/>
+                    AI回复时会自动参考这些数据，无需手动填写。
+                  </div>
+                  <div class="knowledge-row" style="margin-top:10px">
+                    <label>补充用户痛点（可选）</label>
                     <a-textarea v-model:value="kb.audience_pain_points" :rows="2" placeholder="如：油皮出油严重、毛孔粗大、黑头多、痘痘反复、卸妆不干净" />
-                  </div>
-                  <div class="knowledge-row">
-                    <label>用户偏好</label>
-                    <a-textarea v-model:value="kb.audience_preferences" :rows="2" placeholder="如：喜欢清爽不油腻的质地、关注成分安全、偏好氨基酸洁面、看重性价比" />
                   </div>
                 </div>
 
