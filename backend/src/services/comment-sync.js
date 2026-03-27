@@ -94,6 +94,13 @@ async function refreshMarketingToken(account) {
  */
 async function pullComments(advertiserId, accessToken) {
   try {
+    // 获取发布者账号名称
+    let publisherName = '';
+    try {
+      const [accRows] = await db.query('SELECT advertiser_name FROM qc_accounts WHERE advertiser_id=? LIMIT 1', [String(advertiserId)]);
+      if (accRows && accRows.length > 0) publisherName = accRows[0].advertiser_name || '';
+    } catch {}
+
     // 拉取最近24小时的评论
     const now = dayjs();
     const startTime = now.subtract(7, 'day').format('YYYY-MM-DD');
@@ -168,8 +175,8 @@ async function pullComments(advertiserId, accessToken) {
       }
 
       await db.query(
-        `INSERT INTO ops_comment_logs (original_comment_id, original_comment, video_id, video_title, comment_type, ai_category, status, created_at, douyin_nickname, douyin_id)
-         VALUES (?, ?, ?, ?, 'ai_reply', ?, 'pending', ?, ?, ?)`,
+        `INSERT INTO ops_comment_logs (original_comment_id, original_comment, video_id, video_title, comment_type, ai_category, status, created_at, douyin_nickname, douyin_id, publisher_id, publisher_name)
+         VALUES (?, ?, ?, ?, 'ai_reply', ?, 'pending', ?, ?, ?, ?, ?)`,
         [
           commentId,
           commentText,
@@ -179,6 +186,8 @@ async function pullComments(advertiserId, accessToken) {
           comment.create_time || dayjs().format('YYYY-MM-DD HH:mm:ss'),
           comment.aweme_name || '',
           comment.aweme_id || '',
+          String(advertiserId),
+          publisherName,
         ]
       );
       newCount++;
