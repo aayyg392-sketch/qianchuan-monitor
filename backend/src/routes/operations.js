@@ -886,6 +886,31 @@ router.get('/stats/by-video', auth(), async (req, res) => {
   }
 });
 
+// ============ Account-level Stats (by Douyin ID) ============
+router.get('/account-stats', auth(), async (req, res) => {
+  try {
+    // 按抖音号（douyin_id + douyin_nickname）统计评论处理情况
+    const [rows] = await db.query(`
+      SELECT
+        douyin_id AS aweme_id,
+        douyin_nickname AS aweme_name,
+        COUNT(*) AS total_comments,
+        SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS replied_count,
+        SUM(CASE WHEN status='filtered' THEN 1 ELSE 0 END) AS hidden_count,
+        SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending_count
+      FROM ops_comment_logs
+      WHERE douyin_id IS NOT NULL AND douyin_id != ''
+      GROUP BY douyin_id, douyin_nickname
+      ORDER BY total_comments DESC
+      LIMIT 20
+    `);
+    res.json({ code: 0, data: rows || [] });
+  } catch (e) {
+    logger.error('[Operations] account-stats error', { error: e.message });
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
 // ============ Route Aliases (frontend compatibility) ============
 
 // Frontend uses /comment-tasks — duplicate handler logic from /tasks

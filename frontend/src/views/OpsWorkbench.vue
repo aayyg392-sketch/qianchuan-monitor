@@ -143,29 +143,45 @@
         <a-empty v-else description="暂无待处理事项" :image-style="{ height: '60px' }" />
       </div>
 
-      <!-- Section 5: 快捷入口 -->
+      <!-- Section 5: 抖音号维度统计 -->
       <div class="section">
-        <div class="section-title">快捷入口</div>
-        <div class="shortcut-grid">
-          <router-link
-            v-for="entry in shortcuts"
-            :key="entry.key"
-            :to="entry.route"
-            class="shortcut-card"
-          >
-            <div class="shortcut-card__icon" :style="{ background: entry.bgColor }">
-              <component :is="entry.icon" :style="{ fontSize: '22px', color: entry.color }" />
+        <div class="section-title">抖音号统计</div>
+        <a-spin :spinning="accountStatsLoading">
+          <div v-if="accountStats.length" class="account-stats">
+            <div v-for="acc in accountStats" :key="acc.aweme_id" class="account-stat-card">
+              <div class="account-stat-card__header">
+                <div class="account-stat-card__name">{{ acc.aweme_name || acc.aweme_id }}</div>
+                <span v-if="acc.aweme_id" class="account-stat-card__id">@{{ acc.aweme_id }}</span>
+              </div>
+              <div class="account-stat-card__metrics">
+                <div class="account-stat-card__metric">
+                  <span class="account-stat-card__metric-value" style="color:#1677ff">{{ acc.total_comments }}</span>
+                  <span class="account-stat-card__metric-label">总评论</span>
+                </div>
+                <div class="account-stat-card__metric">
+                  <span class="account-stat-card__metric-value" style="color:#52c41a">{{ acc.replied_count }}</span>
+                  <span class="account-stat-card__metric-label">已回复</span>
+                </div>
+                <div class="account-stat-card__metric">
+                  <span class="account-stat-card__metric-value" style="color:#ff4d4f">{{ acc.hidden_count }}</span>
+                  <span class="account-stat-card__metric-label">已屏蔽</span>
+                </div>
+                <div class="account-stat-card__metric">
+                  <span class="account-stat-card__metric-value" style="color:#722ed1">{{ acc.pending_count }}</span>
+                  <span class="account-stat-card__metric-label">待处理</span>
+                </div>
+              </div>
             </div>
-            <div class="shortcut-card__label">{{ entry.label }}</div>
-          </router-link>
-        </div>
+          </div>
+          <a-empty v-else description="暂无抖音号数据" :image-style="{ height: '60px' }" />
+        </a-spin>
       </div>
     </a-spin>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onBeforeUnmount, markRaw } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import {
@@ -178,9 +194,6 @@ import {
   InfoCircleOutlined,
   RobotOutlined,
   EditOutlined,
-  ReadOutlined,
-  BarChartOutlined,
-  TeamOutlined,
   MessageOutlined,
   CommentOutlined,
   SyncOutlined,
@@ -198,6 +211,8 @@ const pullLoading = ref(false)
 const activeAccounts = ref(0)
 const activityList = ref([])
 const alerts = ref([])
+const accountStatsLoading = ref(false)
+const accountStats = ref([])
 
 // ---------- Metric Cards ----------
 const metricCards = reactive([
@@ -214,14 +229,6 @@ const categoryColorMap = {
   '差评': 'red',
   '疑问': 'orange',
 }
-
-// ---------- Shortcuts ----------
-const shortcuts = [
-  { key: 'comments', label: '评论管理', icon: markRaw(EditOutlined), color: '#1677ff', bgColor: '#e6f4ff', route: '/ops-comments' },
-  { key: 'scripts', label: '话术库', icon: markRaw(ReadOutlined), color: '#faad14', bgColor: '#fffbe6', route: '/ops-scripts' },
-  { key: 'accounts', label: '账号管理', icon: markRaw(TeamOutlined), color: '#52c41a', bgColor: '#f6ffed', route: '/ops-accounts' },
-  { key: 'stats', label: '数据统计', icon: markRaw(BarChartOutlined), color: '#722ed1', bgColor: '#f9f0ff', route: '/ops-stats' },
-]
 
 // ---------- Lifecycle ----------
 let refreshTimer = null
@@ -245,6 +252,7 @@ async function loadAll() {
       loadAiConfig(),
       loadActivityLogs(),
       loadAlerts(),
+      loadAccountStats(),
     ])
   } finally {
     loading.value = false
@@ -300,6 +308,18 @@ async function loadAlerts() {
     alerts.value = res.data || []
   } catch (e) {
     console.error('Failed to load alerts:', e)
+  }
+}
+
+async function loadAccountStats() {
+  accountStatsLoading.value = true
+  try {
+    const res = await request.get('/operations/account-stats')
+    accountStats.value = res.data || []
+  } catch (e) {
+    console.error('Failed to load account stats:', e)
+  } finally {
+    accountStatsLoading.value = false
   }
 }
 
@@ -637,40 +657,55 @@ function getActivityColor(item) {
   flex-shrink: 0;
 }
 
-/* Shortcut Grid */
-.shortcut-grid {
+/* Account Stats */
+.account-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.account-stat-card {
+  background: #fff;
+  border-radius: 10px;
+  padding: 14px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+}
+.account-stat-card__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.account-stat-card__name {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1a1a1a;
+}
+.account-stat-card__id {
+  font-size: 12px;
+  color: #8c8c8c;
+}
+.account-stat-card__metrics {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
+  gap: 8px;
 }
-.shortcut-card {
+.account-stat-card__metric {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding: 16px 8px;
-  background: #fff;
-  border-radius: 12px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
-  text-decoration: none;
-  transition: all 0.2s ease;
+  padding: 8px 0;
+  background: #fafafa;
+  border-radius: 8px;
 }
-.shortcut-card:active {
-  transform: scale(0.96);
+.account-stat-card__metric-value {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.2;
 }
-.shortcut-card__icon {
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.shortcut-card__label {
-  font-size: 13px;
-  font-weight: 500;
-  color: #1a1a1a;
-  text-align: center;
+.account-stat-card__metric-label {
+  font-size: 11px;
+  color: #8c8c8c;
+  margin-top: 2px;
 }
 
 /* Desktop Breakpoint */
@@ -692,10 +727,6 @@ function getActivityColor(item) {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
     min-width: unset;
-  }
-  .shortcut-card:hover {
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-    transform: translateY(-2px);
   }
   .alert-card:hover {
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);

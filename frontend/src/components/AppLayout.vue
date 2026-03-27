@@ -224,9 +224,6 @@ const navItems = [
   { path: '/operations', label: '运营中心', icon: operationIcon, children: [
     { path: '/ops-workbench', label: '运营工作台' },
     { path: '/ops-comments', label: '评论管理' },
-    { path: '/ops-accounts', label: '账号管理' },
-    { path: '/ops-scripts', label: '话术库' },
-    { path: '/ops-stats', label: '数据统计' },
   ]},
   { path: '/reports', label: '数据分析', icon: chartIcon },
   { path: '/alerts', label: '告警中心', icon: bellIcon, badge: true },
@@ -257,9 +254,6 @@ const allNavItems = [
   { path: '/competitor-videos', label: '竞品爆款视频', icon: industryIcon },
   { path: '/ops-workbench', label: '运营工作台', icon: operationIcon },
   { path: '/ops-comments', label: '评论管理', icon: operationIcon },
-  { path: '/ops-accounts', label: '账号管理', icon: operationIcon },
-  { path: '/ops-scripts', label: '话术库', icon: operationIcon },
-  { path: '/ops-stats', label: '数据统计', icon: operationIcon },
   { path: '/reports', label: '数据分析', icon: chartIcon },
   { path: '/alerts', label: '告警中心', icon: bellIcon, badge: true },
   { path: '/accounts', label: '账户管理', icon: accountIcon },
@@ -278,7 +272,7 @@ const pageMap = {
   '/material-audit': '素材审核', '/campaigns': '账户列表', '/incubation': '爆款孵化计划',
   '/audience-profile': '产品人群画像', '/influencer-match': '达人合作筛选', '/premium-materials': '优质素材', '/material-dimensions': '内容人员',
   '/ai-text2video': 'AI文生视频', '/industry-hotspot': '行业热点', '/industry-videos': '内容榜单', '/competitor-videos': '竞品爆款视频',
-  '/ops-workbench': '运营工作台', '/ops-comments': '评论管理', '/ops-accounts': '账号管理', '/ops-scripts': '话术库', '/ops-stats': '数据统计',
+  '/ops-workbench': '运营工作台', '/ops-comments': '评论管理',
   '/live-monitor': '实时监控', '/live-comments': '智能评论', '/live-analytics': '分时数据',
   '/live-speech': '话术抓取', '/live-alerts': '异常预警', '/live-replay': '直播复盘', '/live-competitor': '竞品监控',
   '/reports': '数据分析', '/alerts': '告警中心', '/accounts': '账户管理', '/settings': '系统设置'
