@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+*.log
+.DS_Store
+uploads/
+generated-videos/
+frontend/node_modules/
+backend/node_modules/
