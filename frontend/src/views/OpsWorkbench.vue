@@ -204,7 +204,7 @@ async function loadAiConfig() {
   try { const res = await request.get('/operations/ai-reply/config'); aiReplyEnabled.value = !!(res.data || {}).enabled } catch {}
 }
 async function loadActivityLogs() {
-  try { const res = await request.get('/operations/ai-reply/logs', { params: { limit: 20 } }); activityList.value = res.data || [] } catch {}
+  try { const res = await request.get('/operations/ai-reply/logs', { params: { pageSize: 30 } }); activityList.value = res.data?.list || res.data || [] } catch {}
 }
 async function loadAlerts() {
   try {
