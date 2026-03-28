@@ -210,7 +210,7 @@ watch(activeTab, async (v) => {
         type: 'scatter', symbolSize: (val) => val[2] * 3,
         label: { show: true, formatter: (p) => p.data[3], fontSize: (p) => Math.max(12, p.data[2] * 1.5), color: '#1677FF' },
         itemStyle: { color: 'rgba(22,119,255,0.1)' },
-        data: words.map((w, i) => [10 + (i % 4) * 25 + Math.random() * 10, 80 - Math.floor(i / 4) * 25 + Math.random() * 10, w.pct / 5, w.word])
+        data: words.map((w, i) => [10 + (i % 4) * 25 + (i * 7 % 10), 80 - Math.floor(i / 4) * 25 + (i * 3 % 10), w.pct / 5, w.word])
       }]
     })
   }

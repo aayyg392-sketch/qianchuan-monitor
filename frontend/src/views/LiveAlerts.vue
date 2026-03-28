@@ -163,30 +163,55 @@ const levelColor = (l) => ({ critical: 'red', warning: 'orange', info: 'blue' }[
 const levelText = (l) => ({ critical: '严重', warning: '警告', info: '提醒' }[l] || l)
 const viewAlert = (a) => { message.info(`查看预警详情: ${a.title}`) }
 const resolveAlert = (id) => { activeAlerts.value = activeAlerts.value.filter(a => a.id !== id); message.success('已标记处理') }
-const loadAlerts = () => { message.success('已刷新') }
+const loadAlerts = async () => {
+  try {
+    const res = await request.get('/api/live/alerts')
+    if (res && res.data) {
+      const data = res.data
+      if (data.summary) alertSummary.value = data.summary
+      if (data.active_alerts) activeAlerts.value = data.active_alerts
+      if (data.history) alertHistory.value = data.history
+      if (data.trend) {
+        renderTrendChart(data.trend)
+      }
+    }
+    message.success('已刷新')
+  } catch (e) {
+    message.error('加载预警数据失败')
+  }
+}
 const saveConfig = () => { showConfig.value = false; message.success('配置已保存') }
 
 const trendChartRef = ref(null)
 let trendChart
 
+const renderTrendChart = (trendData) => {
+  if (!trendChartRef.value) return
+  if (!trendChart) trendChart = echarts.init(trendChartRef.value)
+  if (!trendData || !trendData.hours || !trendData.hours.length) {
+    trendChart.setOption({
+      title: { text: '暂无预警数据', left: 'center', top: 'center', textStyle: { color: '#999', fontSize: 14, fontWeight: 'normal' } },
+      xAxis: { show: false }, yAxis: { show: false }, series: []
+    })
+    return
+  }
+  trendChart.setOption({
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['严重', '警告', '提醒'] },
+    grid: { left: 40, right: 16, top: 32, bottom: 24 },
+    xAxis: { type: 'category', data: trendData.hours },
+    yAxis: { type: 'value', minInterval: 1 },
+    series: [
+      { name: '严重', type: 'bar', stack: 'total', itemStyle: { color: '#FF4D4F' }, data: trendData.critical || [] },
+      { name: '警告', type: 'bar', stack: 'total', itemStyle: { color: '#FF8A00' }, data: trendData.warning || [] },
+      { name: '提醒', type: 'bar', stack: 'total', itemStyle: { color: '#1677FF' }, data: trendData.info || [] },
+    ]
+  })
+}
+
 onMounted(async () => {
   await nextTick()
-  if (trendChartRef.value) {
-    trendChart = echarts.init(trendChartRef.value)
-    const hours = Array.from({ length: 24 }, (_, i) => `${String(i).padStart(2, '0')}:00`)
-    trendChart.setOption({
-      tooltip: { trigger: 'axis' },
-      legend: { data: ['严重', '警告', '提醒'] },
-      grid: { left: 40, right: 16, top: 32, bottom: 24 },
-      xAxis: { type: 'category', data: hours },
-      yAxis: { type: 'value', minInterval: 1 },
-      series: [
-        { name: '严重', type: 'bar', stack: 'total', itemStyle: { color: '#FF4D4F' }, data: hours.map(() => Math.floor(Math.random() * 3)) },
-        { name: '警告', type: 'bar', stack: 'total', itemStyle: { color: '#FF8A00' }, data: hours.map(() => Math.floor(Math.random() * 5)) },
-        { name: '提醒', type: 'bar', stack: 'total', itemStyle: { color: '#1677FF' }, data: hours.map(() => Math.floor(Math.random() * 8)) },
-      ]
-    })
-  }
+  await loadAlerts()
 })
 onUnmounted(() => { trendChart?.dispose() })
 </script>

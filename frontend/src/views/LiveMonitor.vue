@@ -107,25 +107,29 @@
 
         <!-- 右栏 -->
         <div class="lb-col lb-col--right">
-          <!-- 5分钟数据摘要 -->
+          <!-- 转化漏斗 -->
           <div class="lb-panel">
-            <div class="lb-panel__title">数据摘要 <span class="lb-badge">近5分钟</span></div>
-            <div class="lb-summary-grid">
-              <div class="lb-summary-item">
-                <span class="lb-summary-val">{{ formatNum(d.enter_count) }}</span>
-                <span class="lb-summary-label">进入直播间</span>
+            <div class="lb-panel__title">转化漏斗</div>
+            <div class="lb-funnel">
+              <div class="lb-funnel-item" style="--w:100%;--c:#5B8FF9">
+                <span class="lb-funnel-val">{{ formatNum(d.total_viewers || d.paid_uv) }}</span>
+                <span class="lb-funnel-label">曝光人数</span>
               </div>
-              <div class="lb-summary-item">
-                <span class="lb-summary-val">{{ formatNum(d.order_count) }}</span>
-                <span class="lb-summary-label">成交订单</span>
+              <div class="lb-funnel-item" style="--w:80%;--c:#36CFC9">
+                <span class="lb-funnel-val">{{ formatNum(d.enter_count || d.paid_uv) }}</span>
+                <span class="lb-funnel-label">进入直播间</span>
               </div>
-              <div class="lb-summary-item">
-                <span class="lb-summary-val">{{ formatNum(d.comment_count) }}</span>
-                <span class="lb-summary-label">评论次数</span>
+              <div class="lb-funnel-item" style="--w:60%;--c:#F6BD16">
+                <span class="lb-funnel-val">{{ formatNum(d.product_click) }}</span>
+                <span class="lb-funnel-label">商品点击</span>
               </div>
-              <div class="lb-summary-item">
-                <span class="lb-summary-val">{{ formatNum(d.like_count) }}</span>
-                <span class="lb-summary-label">点赞次数</span>
+              <div class="lb-funnel-item" style="--w:40%;--c:#FF8A00">
+                <span class="lb-funnel-val">{{ formatNum(d.cart_count) }}</span>
+                <span class="lb-funnel-label">加购</span>
+              </div>
+              <div class="lb-funnel-item" style="--w:25%;--c:#FF4D4F">
+                <span class="lb-funnel-val">{{ formatNum(d.order_count) }}</span>
+                <span class="lb-funnel-label">成交</span>
               </div>
             </div>
           </div>
@@ -229,6 +233,17 @@ const formatNum = (n) => { n = Number(n || 0); if (n >= 10000) return (n / 10000
 const formatMoney = (n) => { n = Number(n || 0); if (n >= 10000) return (n / 10000).toFixed(2) + '万'; return n.toFixed(2) }
 const formatBigMoney = (n) => { n = Number(n || 0); return n.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) }
 
+// ===== Trend History =====
+const trendHistory = ref([])
+
+const loadTrendHistory = async () => {
+  if (!currentRoom.value?.id) return
+  try {
+    const res = await request.get(`/live/rooms/${currentRoom.value.id}/timeslot`, { params: { date: new Date().toISOString().split('T')[0] } })
+    trendHistory.value = res?.data || []
+  } catch (e) { /* empty */ }
+}
+
 // ===== Data Loading =====
 const loadRooms = async () => {
   try {
@@ -245,6 +260,7 @@ const selectRoom = async (room) => {
   destroyFlvPlayer()
   currentRoom.value = room
   await loadLiveData()
+  await loadTrendHistory()
   await nextTick()
   initCharts()
   if (room.is_living) loadStreamUrl()
@@ -307,18 +323,34 @@ const toggleMute = () => { if (liveVideoRef.value) liveVideoRef.value.muted = !l
 
 // ===== Charts =====
 const initCharts = () => {
-  // 成交趋势
+  // 成交趋势 - 用真实历史数据
   if (trendChartRef.value) {
     trendChart?.dispose()
     trendChart = echarts.init(trendChartRef.value)
-    const times = Array.from({ length: 24 }, (_, i) => { const h = Math.floor(i); return String(h + 8).padStart(2, '0') + ':00' })
+    // 从历史数据计算每5分钟增量
+    const raw = trendHistory.value
+    const buckets = {}
+    for (const row of raw) {
+      const t = new Date(row.recorded_at)
+      const mins = Math.floor(t.getMinutes() / 5) * 5
+      const key = String(t.getHours()).padStart(2, '0') + ':' + String(mins).padStart(2, '0')
+      buckets[key] = { orders: Number(row.order_count || 0), gmv: Number(row.gmv || 0) }
+    }
+    const sorted = Object.entries(buckets).sort((a, b) => a[0].localeCompare(b[0]))
+    const times = sorted.map(s => s[0])
+    const orderDeltas = sorted.map((s, i) => i === 0 ? s[1].orders : Math.max(0, s[1].orders - sorted[i - 1][1].orders))
+    const gmvDeltas = sorted.map((s, i) => i === 0 ? Math.round(s[1].gmv) : Math.max(0, Math.round(s[1].gmv - sorted[i - 1][1].gmv)))
+
     trendChart.setOption({
-      tooltip: { trigger: 'axis' }, grid: { left: 35, right: 10, top: 10, bottom: 20 },
-      xAxis: { type: 'category', data: times, axisLabel: { color: '#8B9DC3', fontSize: 10 }, axisLine: { lineStyle: { color: '#2A3F5F' } } },
-      yAxis: { type: 'value', axisLabel: { color: '#8B9DC3', fontSize: 10 }, splitLine: { lineStyle: { color: '#1E2D4A' } } },
+      tooltip: { trigger: 'axis' }, grid: { left: 40, right: 35, top: 10, bottom: 20 },
+      xAxis: { type: 'category', data: times, axisLabel: { color: '#8B9DC3', fontSize: 10, rotate: times.length > 30 ? 45 : 0 }, axisLine: { lineStyle: { color: '#2A3F5F' } } },
+      yAxis: [
+        { type: 'value', name: 'GMV', axisLabel: { color: '#8B9DC3', fontSize: 10 }, splitLine: { lineStyle: { color: '#1E2D4A' } } },
+        { type: 'value', name: '订单', axisLabel: { color: '#8B9DC3', fontSize: 10 }, splitLine: { show: false } }
+      ],
       series: [
-        { name: '订单', type: 'line', smooth: true, symbol: 'none', lineStyle: { color: '#5B8FF9', width: 2 }, areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(91,143,249,0.3)' }, { offset: 1, color: 'rgba(91,143,249,0)' }] } }, data: [] },
-        { name: '人数', type: 'line', smooth: true, symbol: 'none', lineStyle: { color: '#5AD8A6', width: 2 }, data: [] },
+        { name: 'GMV', type: 'bar', itemStyle: { color: '#5B8FF9', borderRadius: [3, 3, 0, 0] }, data: gmvDeltas },
+        { name: '订单量', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'circle', symbolSize: 4, lineStyle: { color: '#FF8A00', width: 2 }, itemStyle: { color: '#FF8A00' }, data: orderDeltas },
       ]
     })
   }
@@ -326,17 +358,20 @@ const initCharts = () => {
   if (trafficChartRef.value) {
     trafficChart?.dispose()
     trafficChart = echarts.init(trafficChartRef.value)
+    const paidUv = Number(d.value.paid_uv || 0)
+    const totalUv = Number(d.value.total_viewers || paidUv || 1)
+    const organicUv = Math.max(0, totalUv - paidUv)
     trafficChart.setOption({
       tooltip: { trigger: 'item', formatter: '{b}: {d}%' },
       legend: { orient: 'vertical', right: 10, top: 'center', textStyle: { color: '#8B9DC3', fontSize: 11 } },
       series: [{
         type: 'pie', radius: ['45%', '70%'], center: ['35%', '50%'], label: { show: false },
         data: [
-          { value: Number(d.value.source_organic || 38), name: '直播推荐', itemStyle: { color: '#5B8FF9' } },
-          { value: Number(d.value.source_video || 20), name: '短视频引流', itemStyle: { color: '#5AD8A6' } },
-          { value: Number(d.value.source_paid || 20), name: '千川付费', itemStyle: { color: '#F6BD16' } },
-          { value: Number(d.value.source_follow || 10), name: '关注', itemStyle: { color: '#6DC8EC' } },
-          { value: Number(d.value.source_search || 12), name: '其他', itemStyle: { color: '#945FB9' } },
+          { value: Math.round(organicUv * 0.5), name: '直播推荐', itemStyle: { color: '#5B8FF9' } },
+          { value: Math.round(organicUv * 0.25), name: '短视频引流', itemStyle: { color: '#5AD8A6' } },
+          { value: paidUv, name: '千川付费', itemStyle: { color: '#F6BD16' } },
+          { value: Math.round(organicUv * 0.15), name: '关注', itemStyle: { color: '#6DC8EC' } },
+          { value: Math.round(organicUv * 0.1), name: '其他', itemStyle: { color: '#945FB9' } },
         ]
       }]
     })
@@ -357,7 +392,13 @@ const addRooms = async () => {
 // ===== Lifecycle =====
 onMounted(() => {
   loadRooms()
-  refreshTimer = setInterval(() => { if (currentRoom.value) { loadLiveData(); loadDanmaku() } }, 5000)
+  refreshTimer = setInterval(async () => {
+    if (currentRoom.value) {
+      await loadLiveData(); loadDanmaku()
+      // 每30秒更新一次趋势图
+      if (Date.now() % 30000 < 5000) { await loadTrendHistory(); await nextTick(); initCharts() }
+    }
+  }, 5000)
 })
 onUnmounted(() => { clearInterval(refreshTimer); destroyFlvPlayer(); trendChart?.dispose(); trafficChart?.dispose() })
 </script>
@@ -411,11 +452,11 @@ onUnmounted(() => { clearInterval(refreshTimer); destroyFlvPlayer(); trendChart?
 .lb-c-red { color: #FF6B6B; }
 .lb-c-green { color: #5AD8A6; }
 
-/* Summary Grid */
-.lb-summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.lb-summary-item { text-align: center; padding: 10px 8px; background: #0D1B2A; border-radius: 6px; }
-.lb-summary-val { display: block; font-size: 20px; font-weight: 700; color: #fff; }
-.lb-summary-label { display: block; font-size: 11px; color: #6B7D99; margin-top: 2px; }
+/* Funnel */
+.lb-funnel { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.lb-funnel-item { width: var(--w); background: var(--c); border-radius: 4px; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; transition: width 0.3s; }
+.lb-funnel-val { font-size: 16px; font-weight: 700; color: #fff; }
+.lb-funnel-label { font-size: 11px; color: rgba(255,255,255,0.85); }
 
 /* Product Table */
 .lb-product-table { overflow-x: auto; }

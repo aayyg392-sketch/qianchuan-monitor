@@ -113,14 +113,28 @@ const rooms = ref([
   { id: 2, nickname: '美妆达人小美' },
 ])
 
-const summaryMetrics = ref([
-  { label: '直播时长', value: '4h32m', color: '#1677FF', change: '+15min', changeType: 'up' },
-  { label: '累计场观', value: '28,900', color: '#722ED1', change: '↑12.3%', changeType: 'up' },
-  { label: '在线峰值', value: '5,230', color: '#13C2C2', change: '↑8.1%', changeType: 'up' },
-  { label: '总GMV', value: '¥186,500', color: '#FF8A00', change: '↑23.5%', changeType: 'up' },
-  { label: '订单数', value: '2,356', color: '#00B96B', change: '↑18.2%', changeType: 'up' },
-  { label: '整体ROI', value: '2.18', color: '#FF4D4F', change: '↑0.3', changeType: 'up' },
-])
+const summaryMetrics = ref([])
+const realtimeData = ref(null)
+
+const loadSummaryFromAPI = async () => {
+  try {
+    const res = await request.get('/api/live/rooms/1/realtime')
+    if (res && res.data) {
+      realtimeData.value = res.data
+      const d = res.data
+      summaryMetrics.value = [
+        { label: '直播时长', value: d.duration || '--', color: '#1677FF', change: d.duration_change || '', changeType: d.duration_change_type || '' },
+        { label: '累计场观', value: d.total_viewers != null ? d.total_viewers.toLocaleString() : '--', color: '#722ED1', change: d.viewers_change || '', changeType: d.viewers_change_type || '' },
+        { label: '在线峰值', value: d.peak_online != null ? d.peak_online.toLocaleString() : '--', color: '#13C2C2', change: d.peak_change || '', changeType: d.peak_change_type || '' },
+        { label: '总GMV', value: d.total_gmv != null ? '¥' + d.total_gmv.toLocaleString() : '--', color: '#FF8A00', change: d.gmv_change || '', changeType: d.gmv_change_type || '' },
+        { label: '订单数', value: d.total_orders != null ? d.total_orders.toLocaleString() : '--', color: '#00B96B', change: d.orders_change || '', changeType: d.orders_change_type || '' },
+        { label: '整体ROI', value: d.roi != null ? d.roi.toFixed(2) : '--', color: '#FF4D4F', change: d.roi_change || '', changeType: d.roi_change_type || '' },
+      ]
+    }
+  } catch (e) {
+    summaryMetrics.value = []
+  }
+}
 
 const aiSummary = ref([
   { icon: '📊', title: '流量分析', points: [
@@ -152,14 +166,42 @@ const timelineSlots = Array.from({ length: 55 }, (_, i) => {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
 })
 const currentTimeIdx = ref(30)
-const currentTimeMetrics = computed(() => [
-  { label: '在线人数', value: Math.floor(2000 + Math.random() * 3000).toLocaleString() },
-  { label: '进房人数', value: Math.floor(200 + Math.random() * 500).toLocaleString() },
-  { label: 'GMV', value: '¥' + Math.floor(3000 + Math.random() * 12000).toLocaleString() },
-  { label: '订单量', value: Math.floor(10 + Math.random() * 60).toString() },
-  { label: '转化率', value: (2 + Math.random() * 8).toFixed(1) + '%' },
-  { label: '千川消耗', value: '¥' + Math.floor(500 + Math.random() * 3000).toLocaleString() },
-])
+const timeSlotData = ref({})
+
+const loadTimeSlotData = async (idx) => {
+  const time = timelineSlots[idx]
+  if (!time) return
+  try {
+    const res = await request.get('/api/live/rooms/1/realtime', { params: { time_slot: time } })
+    if (res && res.data) {
+      timeSlotData.value = res.data
+    }
+  } catch (e) {
+    timeSlotData.value = {}
+  }
+}
+
+const currentTimeMetrics = computed(() => {
+  const d = timeSlotData.value
+  if (!d || Object.keys(d).length === 0) {
+    return [
+      { label: '在线人数', value: '--' },
+      { label: '进房人数', value: '--' },
+      { label: 'GMV', value: '--' },
+      { label: '订单量', value: '--' },
+      { label: '转化率', value: '--' },
+      { label: '千川消耗', value: '--' },
+    ]
+  }
+  return [
+    { label: '在线人数', value: d.online != null ? d.online.toLocaleString() : '--' },
+    { label: '进房人数', value: d.enter_count != null ? d.enter_count.toLocaleString() : '--' },
+    { label: 'GMV', value: d.gmv != null ? '¥' + d.gmv.toLocaleString() : '--' },
+    { label: '订单量', value: d.orders != null ? d.orders.toString() : '--' },
+    { label: '转化率', value: d.cvr != null ? d.cvr.toFixed(1) + '%' : '--' },
+    { label: '千川消耗', value: d.cost != null ? '¥' + d.cost.toLocaleString() : '--' },
+  ]
+})
 const currentTimeSpeech = computed(() => [
   { tag: '卖点讲解', tag_color: 'blue', text: '这款精华液用的是专利成分，渗透力是普通产品的3倍' },
   { tag: '逼单促单', tag_color: 'red', text: '最后200单，拍完恢复原价！' },
@@ -194,28 +236,53 @@ const exportOptions = ref([
 
 const exportReport = () => { message.success('报告导出中...') }
 const doExport = (key) => { message.success(`正在导出: ${key}`) }
-const loadReplay = () => { message.success('数据已刷新') }
+const loadReplay = async () => {
+  await loadSummaryFromAPI()
+  await loadOverviewChart()
+  initCharts()
+  message.success('数据已刷新')
+}
 
 const overviewChartRef = ref(null)
 const compareChartRef = ref(null)
 let charts = {}
+
+const overviewChartData = ref(null)
+
+const loadOverviewChart = async () => {
+  try {
+    const res = await request.get('/api/live/rooms/1/realtime', { params: { type: 'chart' } })
+    if (res && res.data) {
+      overviewChartData.value = res.data
+    }
+  } catch (e) {
+    overviewChartData.value = null
+  }
+}
 
 const initCharts = async () => {
   await nextTick()
   if (overviewChartRef.value) {
     charts.overview?.dispose()
     charts.overview = echarts.init(overviewChartRef.value)
-    const times = timelineSlots.filter((_, i) => i % 3 === 0)
+    const cd = overviewChartData.value
+    if (!cd || !cd.times || !cd.times.length) {
+      charts.overview.setOption({
+        title: { text: '暂无数据', left: 'center', top: 'center', textStyle: { color: '#999', fontSize: 14, fontWeight: 'normal' } },
+        xAxis: { show: false }, yAxis: { show: false }, series: []
+      })
+      return
+    }
     charts.overview.setOption({
       tooltip: { trigger: 'axis' },
       legend: { data: ['在线人数', 'GMV', '千川消耗'] },
       grid: { left: 50, right: 50, top: 36, bottom: 24 },
-      xAxis: { type: 'category', data: times, axisLabel: { fontSize: 10, rotate: 30 } },
+      xAxis: { type: 'category', data: cd.times, axisLabel: { fontSize: 10, rotate: 30 } },
       yAxis: [{ type: 'value', name: '人数' }, { type: 'value', name: '元' }],
       series: [
-        { name: '在线人数', type: 'line', smooth: true, areaStyle: { opacity: 0.1 }, lineStyle: { color: '#1677FF' }, itemStyle: { color: '#1677FF' }, data: times.map(() => Math.floor(1500 + Math.random() * 4000)) },
-        { name: 'GMV', type: 'bar', yAxisIndex: 1, itemStyle: { color: '#00B96B', borderRadius: [3, 3, 0, 0] }, data: times.map(() => Math.floor(5000 + Math.random() * 15000)) },
-        { name: '千川消耗', type: 'line', yAxisIndex: 1, smooth: true, lineStyle: { color: '#FF4D4F', type: 'dashed' }, itemStyle: { color: '#FF4D4F' }, data: times.map(() => Math.floor(1000 + Math.random() * 5000)) },
+        { name: '在线人数', type: 'line', smooth: true, areaStyle: { opacity: 0.1 }, lineStyle: { color: '#1677FF' }, itemStyle: { color: '#1677FF' }, data: cd.online || [] },
+        { name: 'GMV', type: 'bar', yAxisIndex: 1, itemStyle: { color: '#00B96B', borderRadius: [3, 3, 0, 0] }, data: cd.gmv || [] },
+        { name: '千川消耗', type: 'line', yAxisIndex: 1, smooth: true, lineStyle: { color: '#FF4D4F', type: 'dashed' }, itemStyle: { color: '#FF4D4F' }, data: cd.cost || [] },
       ]
     })
   }
@@ -247,7 +314,14 @@ watch(replayTab, async (v) => {
   }
 })
 
-onMounted(() => { initCharts() })
+watch(currentTimeIdx, (idx) => { loadTimeSlotData(idx) })
+
+onMounted(async () => {
+  await loadSummaryFromAPI()
+  await loadOverviewChart()
+  initCharts()
+  loadTimeSlotData(currentTimeIdx.value)
+})
 onUnmounted(() => { Object.values(charts).forEach(c => c?.dispose()) })
 </script>
 

@@ -76,7 +76,7 @@
           <span class="dt-card__title">最新评论回复</span>
           <span class="dt-card__badge dt-card__badge--blue">{{ filteredActivity.length }}条</span>
         </div>
-        <div class="dt-card__body--list">
+        <div class="dt-card__body--list ops-reply-scroll">
           <div v-for="(item, idx) in filteredActivity" :key="idx" class="ops-reply-item">
             <div class="ops-reply-item__user">
               <span class="ops-reply-item__name">{{ item.douyin_nickname || '用户' }}</span>
@@ -319,6 +319,9 @@ function formatTime(t) {
 .ops-alert-row__desc { font-size: 12px; color: var(--text-hint); margin-top: 2px; }
 .ops-alert-row__arrow { flex-shrink: 0; }
 
+.ops-reply-scroll { max-height: 630px; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.ops-reply-scroll::-webkit-scrollbar { width: 3px; }
+.ops-reply-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 .ops-reply-item { padding: 12px 16px; border-bottom: 1px solid var(--divider); }
 .ops-reply-item:last-child { border-bottom: none; }
 .ops-reply-item__user { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
