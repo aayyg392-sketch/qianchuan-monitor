@@ -143,13 +143,37 @@ async function pullComments(advertiserId, accessToken) {
       return 0;
     }
 
+    // 从LEVEL_TWO评论（广告主自己的回复）中提取发布者的抖音账号信息
+    let pubDouyinName = publisherName;
+    let pubDouyinId = '';
+    for (const c of comments) {
+      if (c.level_type === 'LEVEL_TWO' && c.aweme_name && c.aweme_id) {
+        pubDouyinName = c.aweme_name;
+        pubDouyinId = c.aweme_id;
+        break;
+      }
+    }
+    // 回退：如果没有LEVEL_TWO，尝试从已有数据库记录中获取
+    if (!pubDouyinId) {
+      try {
+        const [existing] = await db.query(
+          `SELECT publisher_name, publisher_douyin_id FROM ops_comment_logs WHERE publisher_id=? AND publisher_douyin_id IS NOT NULL AND publisher_douyin_id != '' LIMIT 1`,
+          [String(advertiserId)]
+        );
+        if (existing && existing.length > 0) {
+          pubDouyinName = existing[0].publisher_name || pubDouyinName;
+          pubDouyinId = existing[0].publisher_douyin_id || '';
+        }
+      } catch {}
+    }
+
     let newCount = 0;
     for (const comment of comments) {
       // 只保留一级评论（用户评论），过滤掉自己的回复和二级评论
       if (comment.level_type && comment.level_type !== 'LEVEL_ONE') {
         continue;
       }
-      // 过滤掉广告主自己发的回复（reply_to 为空表示是原始评论）
+      // 过滤掉广告主自己发的回复
       if (comment.is_owner || comment.reply_comment_id) {
         continue;
       }
@@ -175,8 +199,8 @@ async function pullComments(advertiserId, accessToken) {
       }
 
       await db.query(
-        `INSERT INTO ops_comment_logs (original_comment_id, original_comment, video_id, video_title, comment_type, ai_category, status, created_at, douyin_nickname, douyin_id, publisher_id, publisher_name)
-         VALUES (?, ?, ?, ?, 'ai_reply', ?, 'pending', ?, ?, ?, ?, ?)`,
+        `INSERT INTO ops_comment_logs (original_comment_id, original_comment, video_id, video_title, comment_type, ai_category, status, created_at, douyin_nickname, douyin_id, publisher_id, publisher_name, publisher_douyin_id)
+         VALUES (?, ?, ?, ?, 'ai_reply', ?, 'pending', ?, ?, ?, ?, ?, ?)`,
         [
           commentId,
           commentText,
@@ -187,7 +211,8 @@ async function pullComments(advertiserId, accessToken) {
           comment.aweme_name || '',
           comment.aweme_id || '',
           String(advertiserId),
-          publisherName,
+          pubDouyinName,
+          pubDouyinId,
         ]
       );
       newCount++;

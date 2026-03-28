@@ -70,37 +70,27 @@
         </div>
       </div>
 
-      <!-- [E] 最新动态 Feed -->
+      <!-- [E] 最新评论回复 -->
       <div class="dt-card">
         <div class="dt-card__head">
-          <span class="dt-card__title">最新动态</span>
-          <div class="seg-tabs">
-            <button class="seg-tab" :class="{ active: feedTab === 'all' }" @click="feedTab = 'all'">全部</button>
-            <button class="seg-tab" :class="{ active: feedTab === 'reply' }" @click="feedTab = 'reply'">回复</button>
-            <button class="seg-tab" :class="{ active: feedTab === 'pull' }" @click="feedTab = 'pull'">拉取</button>
-          </div>
+          <span class="dt-card__title">最新评论回复</span>
+          <span class="dt-card__badge dt-card__badge--blue">{{ filteredActivity.length }}条</span>
         </div>
         <div class="dt-card__body--list">
-          <div v-for="(item, idx) in filteredActivity" :key="idx" class="ops-feed-item">
-            <div class="ops-feed-item__avatar" :style="{ background: getActivityBg(item), color: getActivityColor(item) }">
-              {{ (item.douyin_nickname || '系')[0] }}
+          <div v-for="(item, idx) in filteredActivity" :key="idx" class="ops-reply-item">
+            <div class="ops-reply-item__user">
+              <span class="ops-reply-item__name">{{ item.douyin_nickname || '用户' }}</span>
+              <span v-if="item.douyin_id" class="ops-reply-item__id">{{ item.douyin_id }}</span>
+              <a-tag v-if="item.ai_category" :color="catColorMap[item.ai_category]" size="small">{{ catLabelMap[item.ai_category] || item.ai_category }}</a-tag>
+              <span class="ops-reply-item__time">{{ formatTime(item.created_at || item.timestamp) }}</span>
             </div>
-            <div class="ops-feed-item__body">
-              <div class="ops-feed-item__row1">
-                <span class="ops-feed-item__name">{{ item.douyin_nickname || '系统' }}</span>
-                <a-tag v-if="item.ai_category" :color="catColorMap[item.ai_category]" size="small">
-                  {{ catLabelMap[item.ai_category] || item.ai_category }}
-                </a-tag>
-              </div>
-              <div class="ops-feed-item__comment">{{ item.original_comment || item.description }}</div>
-              <div v-if="item.reply_content" class="ops-feed-item__reply">
-                <span class="ops-feed-item__ai-tag">AI</span>
-                {{ item.reply_content }}
-              </div>
-              <div class="ops-feed-item__time">{{ formatTime(item.created_at || item.timestamp) }}</div>
+            <div class="ops-reply-item__comment">{{ item.original_comment || item.description }}</div>
+            <div v-if="item.reply_content" class="ops-reply-item__reply">
+              <span class="ops-reply-item__ai-tag">AI回复</span>
+              {{ item.reply_content }}
             </div>
           </div>
-          <div v-if="!filteredActivity.length" class="ops-empty-tip">暂无动态记录</div>
+          <div v-if="!filteredActivity.length" class="ops-empty-tip">暂无评论回复记录</div>
         </div>
       </div>
 
@@ -116,7 +106,7 @@
               <div class="ops-acc-row__avatar">{{ (acc.aweme_name || '?')[0] }}</div>
               <div class="ops-acc-row__info">
                 <div class="ops-acc-row__name">{{ acc.aweme_name || acc.aweme_id }}</div>
-                <div class="ops-acc-row__id" v-if="acc.aweme_id">ID: {{ acc.aweme_id }}</div>
+                <div class="ops-acc-row__id" v-if="acc.aweme_id">抖音号: {{ acc.aweme_id }}</div>
               </div>
             </div>
             <div class="ops-acc-row__stats">
@@ -153,7 +143,6 @@ const accountStats = ref([])
 const accountStatsLoading = ref(false)
 const successRate = ref(0)
 const categoryList = ref([])
-const feedTab = ref('all')
 const isMobile = ref(window.innerWidth < 768)
 
 const metricCards = reactive([
@@ -167,10 +156,7 @@ const catColorMap = { positive: 'green', inquiry: 'blue', negative: 'red', quest
 const catLabelMap = { positive: '好评', inquiry: '咨询', negative: '差评', question: '疑问', other: '其他' }
 
 const filteredActivity = computed(() => {
-  let list = activityList.value
-  if (feedTab.value === 'reply') list = list.filter(i => i.status === 'success' || i.reply_content)
-  else if (feedTab.value === 'pull') list = list.filter(i => i.status === 'pending' && !i.reply_content)
-  return list.slice(0, isMobile.value ? 10 : 20)
+  return activityList.value.filter(i => i.reply_content).slice(0, isMobile.value ? 10 : 20)
 })
 
 let refreshTimer = null
@@ -333,16 +319,15 @@ function formatTime(t) {
 .ops-alert-row__desc { font-size: 12px; color: var(--text-hint); margin-top: 2px; }
 .ops-alert-row__arrow { flex-shrink: 0; }
 
-.ops-feed-item { display: flex; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--divider); }
-.ops-feed-item:last-child { border-bottom: none; }
-.ops-feed-item__avatar { width: 34px; height: 34px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; flex-shrink: 0; }
-.ops-feed-item__body { flex: 1; min-width: 0; }
-.ops-feed-item__row1 { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
-.ops-feed-item__name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
-.ops-feed-item__comment { font-size: 13px; color: var(--text-secondary); line-height: 1.5; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-.ops-feed-item__reply { font-size: 12px; color: var(--c-success); background: var(--c-success-bg); padding: 6px 10px; border-radius: var(--radius-sm); margin-top: 6px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-.ops-feed-item__ai-tag { display: inline-block; font-size: 10px; font-weight: 700; background: var(--c-success); color: #fff; padding: 1px 4px; border-radius: 3px; margin-right: 4px; vertical-align: middle; }
-.ops-feed-item__time { font-size: 11px; color: var(--text-hint); margin-top: 4px; }
+.ops-reply-item { padding: 12px 16px; border-bottom: 1px solid var(--divider); }
+.ops-reply-item:last-child { border-bottom: none; }
+.ops-reply-item__user { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
+.ops-reply-item__name { font-size: 13px; font-weight: 600; color: var(--c-primary); }
+.ops-reply-item__id { font-size: 11px; color: var(--text-hint); }
+.ops-reply-item__time { font-size: 11px; color: var(--text-hint); margin-left: auto; }
+.ops-reply-item__comment { font-size: 13px; color: var(--text-primary); line-height: 1.5; margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.ops-reply-item__reply { font-size: 12px; color: var(--c-success); background: var(--c-success-bg); padding: 8px 12px; border-radius: var(--radius-sm); line-height: 1.5; border-left: 3px solid var(--c-success); }
+.ops-reply-item__ai-tag { display: inline-block; font-size: 10px; font-weight: 700; background: var(--c-success); color: #fff; padding: 1px 5px; border-radius: 3px; margin-right: 5px; vertical-align: middle; }
 .ops-empty-tip { padding: 32px 16px; text-align: center; font-size: 13px; color: var(--text-hint); }
 
 .ops-acc-row { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--divider); gap: 12px; flex-wrap: wrap; }
