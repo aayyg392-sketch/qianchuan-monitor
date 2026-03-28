@@ -76,7 +76,7 @@
           <span class="dt-card__title">最新评论回复</span>
           <span class="dt-card__badge dt-card__badge--blue">{{ filteredActivity.length }}条</span>
         </div>
-        <div class="dt-card__body--list ops-reply-scroll">
+        <div ref="replyScrollRef" class="dt-card__body--list ops-reply-scroll" @mouseenter="pauseScroll" @mouseleave="resumeScroll" @touchstart="pauseScroll" @touchend="resumeScroll">
           <div v-for="(item, idx) in filteredActivity" :key="idx" class="ops-reply-item">
             <div class="ops-reply-item__user">
               <span class="ops-reply-item__name">{{ item.douyin_nickname || '用户' }}</span>
@@ -144,6 +144,9 @@ const accountStatsLoading = ref(false)
 const successRate = ref(0)
 const categoryList = ref([])
 const isMobile = ref(window.innerWidth < 768)
+const replyScrollRef = ref(null)
+let scrollTimer = null
+let scrollPaused = false
 
 const metricCards = reactive([
   { key: 'pulled', label: '拉取评论', value: '--', color: 'var(--c-primary)', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>' },
@@ -166,11 +169,27 @@ onMounted(() => {
   loadAll()
   refreshTimer = setInterval(loadAll, 60000)
   window.addEventListener('resize', onResize)
+  startAutoScroll()
 })
 onBeforeUnmount(() => {
   if (refreshTimer) clearInterval(refreshTimer)
+  if (scrollTimer) clearInterval(scrollTimer)
   window.removeEventListener('resize', onResize)
 })
+
+function startAutoScroll() {
+  scrollTimer = setInterval(() => {
+    const el = replyScrollRef.value
+    if (!el || scrollPaused) return
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 2) {
+      el.scrollTo({ top: 0, behavior: 'smooth' })
+    } else {
+      el.scrollBy({ top: 1, behavior: 'auto' })
+    }
+  }, 50)
+}
+function pauseScroll() { scrollPaused = true }
+function resumeScroll() { scrollPaused = false }
 
 async function loadAll() {
   try { await Promise.all([loadOverview(), loadAiConfig(), loadActivityLogs(), loadAlerts(), loadAccountStats()]) } catch {}
@@ -319,9 +338,9 @@ function formatTime(t) {
 .ops-alert-row__desc { font-size: 12px; color: var(--text-hint); margin-top: 2px; }
 .ops-alert-row__arrow { flex-shrink: 0; }
 
-.ops-reply-scroll { max-height: 630px; overflow-y: auto; -webkit-overflow-scrolling: touch; }
-.ops-reply-scroll::-webkit-scrollbar { width: 3px; }
-.ops-reply-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.ops-reply-scroll { max-height: 270px; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.ops-reply-scroll::-webkit-scrollbar { width: 2px; }
+.ops-reply-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 .ops-reply-item { padding: 12px 16px; border-bottom: 1px solid var(--divider); }
 .ops-reply-item:last-child { border-bottom: none; }
 .ops-reply-item__user { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
