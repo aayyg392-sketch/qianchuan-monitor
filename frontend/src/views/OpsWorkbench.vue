@@ -1,209 +1,147 @@
 <template>
-  <div class="ops-workbench">
-    <a-spin :spinning="loading">
-      <!-- Header -->
-      <div class="page-header">
-        <div class="page-header__left">
-          <h2 class="page-title">运营中心</h2>
-          <span class="page-subtitle">实时看板</span>
-        </div>
-        <a-button size="small" @click="refreshAll" :loading="refreshing">
-          <template #icon><ReloadOutlined /></template>
-          刷新
-        </a-button>
+  <div class="ops-wb">
+    <!-- [A] Hero 渐变顶栏 -->
+    <div class="ops-hero">
+      <div class="ops-hero__top">
+        <h2 class="ops-hero__title">运营中心</h2>
+        <button class="ops-hero__icon-btn" @click="refreshAll" :disabled="refreshing">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+        </button>
       </div>
-
-      <!-- Section 1: 运营状态 -->
-      <div class="status-bar">
-        <div class="status-bar__left">
-          <div class="status-bar__switch">
-            <span class="status-bar__label">AI自动回复</span>
-            <a-switch
-              v-model:checked="aiReplyEnabled"
-              :loading="aiSwitchLoading"
-              @change="handleAiToggle"
-            />
-          </div>
-          <span class="status-bar__text" :class="aiReplyEnabled ? 'status-bar__text--active' : ''">
-            {{ aiReplyEnabled ? '运行中·每5分钟拉取' : '已关闭' }}
+      <div class="ops-hero__controls">
+        <div class="ops-hero__switch">
+          <a-switch v-model:checked="aiReplyEnabled" :loading="aiSwitchLoading" @change="handleAiToggle" size="small" />
+          <span class="ops-hero__switch-text">
+            AI自动回复
+            <span class="ops-hero__dot" :class="aiReplyEnabled ? 'ops-hero__dot--on' : ''"></span>
+            <span>{{ aiReplyEnabled ? '运行中' : '已关闭' }}</span>
           </span>
         </div>
-        <div class="status-bar__right">
-          <a-badge :count="activeAccounts" :overflow-count="999" class="status-bar__badge">
-            <span class="status-bar__badge-label">活跃账户</span>
-          </a-badge>
-          <a-button
-            type="primary"
-            size="small"
-            :loading="pullLoading"
-            @click="handlePullComments"
-          >
-            <template #icon><CloudDownloadOutlined /></template>
-            一键拉取评论
-          </a-button>
-        </div>
+        <button class="ops-hero__pull-btn" :disabled="pullLoading" @click="handlePullComments">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          {{ pullLoading ? '拉取中...' : '拉取评论' }}
+        </button>
       </div>
+    </div>
 
-      <!-- Section 2: 今日数据 -->
-      <div class="section">
-        <div class="section-title">今日数据</div>
-        <div class="metrics-scroll">
-          <div class="metrics-grid">
-            <div
-              v-for="item in metricCards"
-              :key="item.key"
-              class="metric-card"
-              :style="{ borderTop: `3px solid ${item.color}` }"
-            >
-              <div class="metric-card__label">{{ item.label }}</div>
-              <div class="metric-card__value">
-                <span :style="{ color: item.color }">{{ item.value }}</span>
-                <span
-                  v-if="item.trend !== undefined && item.trend !== null"
-                  class="metric-card__trend"
-                  :class="item.trend >= 0 ? 'trend-up' : 'trend-down'"
-                >
-                  <ArrowUpOutlined v-if="item.trend >= 0" />
-                  <ArrowDownOutlined v-else />
-                  {{ Math.abs(item.trend).toFixed(1) }}%
-                </span>
-              </div>
-              <div class="metric-card__sub">较昨日</div>
-            </div>
+    <!-- [B] KPI 指标网格 -->
+    <div class="ops-content">
+      <div class="stat-grid ops-kpi-overlap">
+        <div v-for="card in metricCards" :key="card.key" class="stat-card">
+          <div class="stat-card__top">
+            <span class="stat-card__label">{{ card.label }}</span>
+            <span class="stat-card__badge" :style="{ background: card.color + '18', color: card.color }">
+              <span v-html="card.icon"></span>
+            </span>
+          </div>
+          <div class="stat-card__value" :style="{ color: card.color }">{{ card.value }}</div>
+          <div class="stat-card__bottom">
+            <span class="stat-card__prev">回复率 {{ successRate }}%</span>
           </div>
         </div>
       </div>
 
-      <!-- Section 3: 最新动态 -->
-      <div class="section">
-        <div class="section-title">
-          最新动态
-          <a-badge :count="activityList.length" :number-style="{ backgroundColor: '#1677ff' }" />
+      <!-- [C] 评论分类标签 -->
+      <div v-if="categoryList.length" class="ops-cats">
+        <span v-for="cat in categoryList" :key="cat.key" class="ops-cat-pill"
+              :style="{ background: cat.bg, color: cat.color }">
+          {{ cat.label }} {{ cat.count }}
+        </span>
+      </div>
+
+      <!-- [D] 待处理事项 -->
+      <div v-if="alerts.length" class="dt-card">
+        <div class="dt-card__head">
+          <span class="dt-card__title">待处理</span>
+          <span class="dt-card__badge dt-card__badge--orange">{{ alerts.length }}项</span>
         </div>
-        <div v-if="activityList.length" class="activity-feed">
-          <div
-            v-for="(item, idx) in activityList"
-            :key="idx"
-            class="activity-item"
-          >
-            <div class="activity-item__dot" :style="{ background: getActivityColor(item) }"></div>
-            <div class="activity-item__body">
-              <div class="activity-item__content">
-                <component :is="getActivityIcon(item)" class="activity-item__icon" />
-                <span class="activity-item__text">{{ item.description }}</span>
-                <a-tag
-                  v-if="item.ai_category"
-                  :color="categoryColorMap[item.ai_category] || 'default'"
-                  size="small"
-                  class="activity-item__tag"
-                >
-                  {{ item.ai_category }}
+        <div class="dt-card__body--list">
+          <div v-for="alert in alerts" :key="alert.id" class="ops-alert-row" @click="handleAlertAction(alert)">
+            <span class="ops-alert-row__icon" :class="`ops-alert-row__icon--${alert.level}`">
+              <svg v-if="alert.level==='error'" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+              <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
+            </span>
+            <div class="ops-alert-row__body">
+              <div class="ops-alert-row__title">{{ alert.title }}</div>
+              <div class="ops-alert-row__desc">{{ alert.description }}</div>
+            </div>
+            <svg class="ops-alert-row__arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#bfbfbf" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+          </div>
+        </div>
+      </div>
+
+      <!-- [E] 最新动态 Feed -->
+      <div class="dt-card">
+        <div class="dt-card__head">
+          <span class="dt-card__title">最新动态</span>
+          <div class="seg-tabs">
+            <button class="seg-tab" :class="{ active: feedTab === 'all' }" @click="feedTab = 'all'">全部</button>
+            <button class="seg-tab" :class="{ active: feedTab === 'reply' }" @click="feedTab = 'reply'">回复</button>
+            <button class="seg-tab" :class="{ active: feedTab === 'pull' }" @click="feedTab = 'pull'">拉取</button>
+          </div>
+        </div>
+        <div class="dt-card__body--list">
+          <div v-for="(item, idx) in filteredActivity" :key="idx" class="ops-feed-item">
+            <div class="ops-feed-item__avatar" :style="{ background: getActivityBg(item), color: getActivityColor(item) }">
+              {{ (item.douyin_nickname || '系')[0] }}
+            </div>
+            <div class="ops-feed-item__body">
+              <div class="ops-feed-item__row1">
+                <span class="ops-feed-item__name">{{ item.douyin_nickname || '系统' }}</span>
+                <a-tag v-if="item.ai_category" :color="catColorMap[item.ai_category]" size="small">
+                  {{ catLabelMap[item.ai_category] || item.ai_category }}
                 </a-tag>
               </div>
-              <div class="activity-item__time">{{ formatTime(item.created_at || item.timestamp) }}</div>
+              <div class="ops-feed-item__comment">{{ item.original_comment || item.description }}</div>
+              <div v-if="item.reply_content" class="ops-feed-item__reply">
+                <span class="ops-feed-item__ai-tag">AI</span>
+                {{ item.reply_content }}
+              </div>
+              <div class="ops-feed-item__time">{{ formatTime(item.created_at || item.timestamp) }}</div>
             </div>
           </div>
+          <div v-if="!filteredActivity.length" class="ops-empty-tip">暂无动态记录</div>
         </div>
-        <a-empty
-          v-else
-          description="暂无动态，开启AI自动回复后将显示实时记录"
-          :image-style="{ height: '60px' }"
-        />
       </div>
 
-      <!-- Section 4: 待处理事项 -->
-      <div class="section">
-        <div class="section-title">
-          待处理事项
-          <a-badge :count="alerts.length" :offset="[8, -2]" />
+      <!-- [F] 抖音号统计 -->
+      <div v-if="accountStats.length" class="dt-card">
+        <div class="dt-card__head">
+          <span class="dt-card__title">发布账号统计</span>
+          <span class="dt-card__badge dt-card__badge--blue">{{ accountStats.length }}个</span>
         </div>
-        <div v-if="alerts.length" class="alerts-list">
-          <div
-            v-for="alert in alerts"
-            :key="alert.id"
-            class="alert-card"
-            :class="`alert-card--${alert.level}`"
-            @click="handleAlertAction(alert)"
-          >
-            <div class="alert-card__icon">
-              <ExclamationCircleOutlined v-if="alert.level === 'error'" style="color: #ff4d4f" />
-              <WarningOutlined v-else-if="alert.level === 'warning'" style="color: #faad14" />
-              <InfoCircleOutlined v-else style="color: #1677ff" />
+        <div class="dt-card__body--list">
+          <div v-for="acc in accountStats" :key="acc.aweme_id" class="ops-acc-row">
+            <div class="ops-acc-row__left">
+              <div class="ops-acc-row__avatar">{{ (acc.aweme_name || '?')[0] }}</div>
+              <div class="ops-acc-row__info">
+                <div class="ops-acc-row__name">{{ acc.aweme_name || acc.aweme_id }}</div>
+                <div class="ops-acc-row__id" v-if="acc.aweme_id">ID: {{ acc.aweme_id }}</div>
+              </div>
             </div>
-            <div class="alert-card__body">
-              <div class="alert-card__title">{{ alert.title }}</div>
-              <div class="alert-card__desc">{{ alert.description }}</div>
-              <div class="alert-card__time">{{ alert.time }}</div>
-            </div>
-            <div class="alert-card__action">
-              <a-button type="link" size="small">{{ alert.actionText || '处理' }}</a-button>
+            <div class="ops-acc-row__stats">
+              <span class="ops-acc-row__num"><em style="color:var(--c-primary)">{{ acc.total_comments }}</em> 评论</span>
+              <span class="ops-acc-row__num"><em style="color:var(--c-success)">{{ acc.replied_count }}</em> 回复</span>
+              <span class="ops-acc-row__num"><em style="color:var(--c-danger)">{{ acc.hidden_count }}</em> 屏蔽</span>
+              <span class="ops-acc-row__num"><em style="color:var(--c-purple)">{{ acc.pending_count }}</em> 待处理</span>
             </div>
           </div>
         </div>
-        <a-empty v-else description="暂无待处理事项" :image-style="{ height: '60px' }" />
       </div>
 
-      <!-- Section 5: 抖音号维度统计 -->
-      <div class="section">
-        <div class="section-title">抖音号统计</div>
-        <a-spin :spinning="accountStatsLoading">
-          <div v-if="accountStats.length" class="account-stats">
-            <div v-for="acc in accountStats" :key="acc.aweme_id" class="account-stat-card">
-              <div class="account-stat-card__header">
-                <div class="account-stat-card__name">{{ acc.aweme_name || acc.aweme_id }}</div>
-                <span v-if="acc.aweme_id" class="account-stat-card__id">@{{ acc.aweme_id }}</span>
-              </div>
-              <div class="account-stat-card__metrics">
-                <div class="account-stat-card__metric">
-                  <span class="account-stat-card__metric-value" style="color:#1677ff">{{ acc.total_comments }}</span>
-                  <span class="account-stat-card__metric-label">总评论</span>
-                </div>
-                <div class="account-stat-card__metric">
-                  <span class="account-stat-card__metric-value" style="color:#52c41a">{{ acc.replied_count }}</span>
-                  <span class="account-stat-card__metric-label">已回复</span>
-                </div>
-                <div class="account-stat-card__metric">
-                  <span class="account-stat-card__metric-value" style="color:#ff4d4f">{{ acc.hidden_count }}</span>
-                  <span class="account-stat-card__metric-label">已屏蔽</span>
-                </div>
-                <div class="account-stat-card__metric">
-                  <span class="account-stat-card__metric-value" style="color:#722ed1">{{ acc.pending_count }}</span>
-                  <span class="account-stat-card__metric-label">待处理</span>
-                </div>
-              </div>
-            </div>
-          </div>
-          <a-empty v-else description="暂无抖音号数据" :image-style="{ height: '60px' }" />
-        </a-spin>
-      </div>
-    </a-spin>
+      <div class="ops-safe-bottom"></div>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
-import {
-  ReloadOutlined,
-  CloudDownloadOutlined,
-  ArrowUpOutlined,
-  ArrowDownOutlined,
-  ExclamationCircleOutlined,
-  WarningOutlined,
-  InfoCircleOutlined,
-  RobotOutlined,
-  EditOutlined,
-  MessageOutlined,
-  CommentOutlined,
-  SyncOutlined,
-} from '@ant-design/icons-vue'
 import request from '@/utils/request'
 
 const router = useRouter()
 
-// ---------- State ----------
-const loading = ref(false)
 const refreshing = ref(false)
 const aiReplyEnabled = ref(false)
 const aiSwitchLoading = ref(false)
@@ -211,62 +149,49 @@ const pullLoading = ref(false)
 const activeAccounts = ref(0)
 const activityList = ref([])
 const alerts = ref([])
-const accountStatsLoading = ref(false)
 const accountStats = ref([])
+const accountStatsLoading = ref(false)
+const successRate = ref(0)
+const categoryList = ref([])
+const feedTab = ref('all')
+const isMobile = ref(window.innerWidth < 768)
 
-// ---------- Metric Cards ----------
 const metricCards = reactive([
-  { key: 'pulled', label: '拉取评论数', value: '--', trend: undefined, color: '#1677ff' },
-  { key: 'aiReplies', label: 'AI回复数', value: '--', trend: undefined, color: '#52c41a' },
-  { key: 'hidden', label: '已隐藏差评', value: '--', trend: undefined, color: '#ff4d4f' },
-  { key: 'pending', label: '待处理评论', value: '--', trend: undefined, color: '#722ed1' },
+  { key: 'pulled', label: '拉取评论', value: '--', color: 'var(--c-primary)', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>' },
+  { key: 'replies', label: 'AI回复', value: '--', color: 'var(--c-success)', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>' },
+  { key: 'hidden', label: '已屏蔽', value: '--', color: 'var(--c-danger)', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><line x1="1" y1="1" x2="23" y2="23"/></svg>' },
+  { key: 'pending', label: '待处理', value: '--', color: 'var(--c-purple)', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>' },
 ])
 
-// ---------- Category Colors ----------
-const categoryColorMap = {
-  '好评': 'green',
-  '咨询': 'blue',
-  '差评': 'red',
-  '疑问': 'orange',
-}
+const catColorMap = { positive: 'green', inquiry: 'blue', negative: 'red', question: 'orange', other: 'default' }
+const catLabelMap = { positive: '好评', inquiry: '咨询', negative: '差评', question: '疑问', other: '其他' }
 
-// ---------- Lifecycle ----------
+const filteredActivity = computed(() => {
+  let list = activityList.value
+  if (feedTab.value === 'reply') list = list.filter(i => i.status === 'success' || i.reply_content)
+  else if (feedTab.value === 'pull') list = list.filter(i => i.status === 'pending' && !i.reply_content)
+  return list.slice(0, isMobile.value ? 10 : 20)
+})
+
 let refreshTimer = null
+function onResize() { isMobile.value = window.innerWidth < 768 }
 
 onMounted(() => {
   loadAll()
-  // Auto-refresh every 60 seconds
   refreshTimer = setInterval(loadAll, 60000)
+  window.addEventListener('resize', onResize)
 })
-
 onBeforeUnmount(() => {
   if (refreshTimer) clearInterval(refreshTimer)
+  window.removeEventListener('resize', onResize)
 })
 
-// ---------- Data Loading ----------
 async function loadAll() {
-  loading.value = true
-  try {
-    await Promise.all([
-      loadOverview(),
-      loadAiConfig(),
-      loadActivityLogs(),
-      loadAlerts(),
-      loadAccountStats(),
-    ])
-  } finally {
-    loading.value = false
-  }
+  try { await Promise.all([loadOverview(), loadAiConfig(), loadActivityLogs(), loadAlerts(), loadAccountStats()]) } catch {}
 }
-
 async function refreshAll() {
   refreshing.value = true
-  try {
-    await loadAll()
-    message.success('刷新成功')
-  } finally {
-    refreshing.value = false
-  }
+  try { await loadAll(); message.success('刷新成功') } finally { refreshing.value = false }
 }
 
 async function loadOverview() {
@@ -278,461 +203,172 @@ async function loadOverview() {
     metricCards[2].value = d.hidden_comments ?? 0
     metricCards[3].value = d.pending_comments ?? 0
     activeAccounts.value = d.active_accounts ?? 0
-  } catch (e) {
-    console.error('Failed to load overview:', e)
-  }
+    successRate.value = d.success_rate ?? 0
+    const cats = d.categories || {}
+    categoryList.value = [
+      { key: 'positive', label: '好评', count: cats.positive || 0, color: 'var(--c-success)', bg: 'var(--c-success-bg)' },
+      { key: 'inquiry', label: '咨询', count: cats.inquiry || 0, color: 'var(--c-primary)', bg: 'var(--c-primary-bg)' },
+      { key: 'negative', label: '差评', count: cats.negative || 0, color: 'var(--c-danger)', bg: 'var(--c-danger-bg)' },
+      { key: 'question', label: '疑问', count: cats.question || 0, color: 'var(--c-warning)', bg: 'var(--c-warning-bg)' },
+      { key: 'other', label: '其他', count: cats.other || 0, color: 'var(--text-hint)', bg: 'var(--bg-secondary)' },
+    ].filter(c => c.count > 0)
+  } catch {}
 }
-
 async function loadAiConfig() {
-  try {
-    const res = await request.get('/operations/ai-reply/config')
-    const d = res.data || {}
-    aiReplyEnabled.value = !!d.enabled
-  } catch (e) {
-    console.error('Failed to load AI config:', e)
-  }
+  try { const res = await request.get('/operations/ai-reply/config'); aiReplyEnabled.value = !!(res.data || {}).enabled } catch {}
 }
-
 async function loadActivityLogs() {
-  try {
-    const res = await request.get('/operations/ai-reply/logs', { params: { limit: 20 } })
-    activityList.value = res.data || []
-  } catch (e) {
-    console.error('Failed to load activity logs:', e)
-  }
+  try { const res = await request.get('/operations/ai-reply/logs', { params: { limit: 20 } }); activityList.value = res.data || [] } catch {}
 }
-
 async function loadAlerts() {
   try {
     const res = await request.get('/operations/pending-alerts')
-    alerts.value = res.data || []
-  } catch (e) {
-    console.error('Failed to load alerts:', e)
-  }
+    const d = res.data || {}; const list = []
+    if (d.expiredAccounts?.length) d.expiredAccounts.forEach(a => list.push({ id: `exp-${a.id}`, level: 'error', title: 'Token即将过期', description: `${a.account_name} 的Token将在24小时内过期`, route: '/settings' }))
+    if (d.riskAccounts?.length) d.riskAccounts.forEach(a => list.push({ id: `risk-${a.id}`, level: 'warning', title: '接近频率限制', description: `${a.account_name} 今日已发${a.daily_comment_count}条` }))
+    if (d.pendingReplies > 10) list.push({ id: 'pending', level: 'info', title: '评论积压', description: `${d.pendingReplies}条评论待处理`, route: '/ops-comments' })
+    alerts.value = list
+  } catch {}
 }
-
 async function loadAccountStats() {
   accountStatsLoading.value = true
-  try {
-    const res = await request.get('/operations/account-stats')
-    accountStats.value = res.data || []
-  } catch (e) {
-    console.error('Failed to load account stats:', e)
-  } finally {
-    accountStatsLoading.value = false
-  }
+  try { const res = await request.get('/operations/account-stats'); accountStats.value = res.data || [] } catch {} finally { accountStatsLoading.value = false }
 }
 
-// ---------- Actions ----------
-async function handleAiToggle(checked) {
+async function handleAiToggle(val) {
   aiSwitchLoading.value = true
-  try {
-    await request.put('/operations/ai-reply/config', { enabled: checked })
-    message.success(checked ? 'AI自动回复已开启' : 'AI自动回复已关闭')
-  } catch (e) {
-    // Revert on failure
-    aiReplyEnabled.value = !checked
-    console.error('Failed to toggle AI reply:', e)
-  } finally {
-    aiSwitchLoading.value = false
-  }
+  try { await request.put('/operations/ai-reply/config', { enabled: val ? 1 : 0 }); message.success(val ? 'AI自动回复已开启' : 'AI自动回复已关闭') } catch { aiReplyEnabled.value = !val } finally { aiSwitchLoading.value = false }
 }
-
 async function handlePullComments() {
   pullLoading.value = true
-  try {
-    const res = await request.post('/operations/comments/pull')
-    const count = res.data?.count ?? 0
-    message.success(`成功拉取 ${count} 条评论`)
-    await loadOverview()
-    await loadActivityLogs()
-  } catch (e) {
-    console.error('Failed to pull comments:', e)
-  } finally {
-    pullLoading.value = false
-  }
+  try { const res = await request.post('/operations/comments/pull'); message.success(res.data?.msg || `拉取完成`); await loadAll() } catch { message.error('拉取失败') } finally { pullLoading.value = false }
 }
-
-function handleAlertAction(alert) {
-  if (alert.route) {
-    router.push(alert.route)
-  } else {
-    message.info('正在处理...')
-  }
-}
-
-// ---------- Helpers ----------
-function formatTime(ts) {
-  if (!ts) return ''
-  const d = new Date(ts)
-  const pad = (n) => String(n).padStart(2, '0')
-  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
-
-function getActivityIcon(item) {
-  if (item.type === 'reply' || item.type === 'ai_reply') return RobotOutlined
-  if (item.type === 'pull') return SyncOutlined
-  if (item.type === 'comment') return CommentOutlined
-  return MessageOutlined
-}
+function handleAlertAction(alert) { if (alert.route) router.push(alert.route) }
 
 function getActivityColor(item) {
-  if (item.type === 'reply' || item.type === 'ai_reply') return '#52c41a'
-  if (item.type === 'pull') return '#1677ff'
-  if (item.type === 'error') return '#ff4d4f'
-  return '#1677ff'
+  if (item.status === 'success') return 'var(--c-success)'
+  if (item.status === 'failed') return 'var(--c-danger)'
+  return 'var(--c-primary)'
+}
+function getActivityBg(item) {
+  if (item.status === 'success') return 'var(--c-success-bg)'
+  if (item.status === 'failed') return 'var(--c-danger-bg)'
+  return 'var(--c-primary-bg)'
+}
+function formatTime(t) {
+  if (!t) return ''
+  const d = new Date(t), now = new Date(), diff = (now - d) / 1000
+  if (diff < 60) return '刚刚'
+  if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}小时前`
+  return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 </script>
 
 <style scoped>
-.ops-workbench {
-  padding: 16px;
-  max-width: 1200px;
-  margin: 0 auto;
-  background: #f5f5f5;
-  min-height: 100vh;
+.ops-hero {
+  background: linear-gradient(135deg, var(--c-primary) 0%, #4E8EFF 100%);
+  padding: 16px 16px 40px; border-radius: 0 0 var(--radius-xl) var(--radius-xl); color: #fff;
 }
+.ops-hero__top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.ops-hero__title { font-size: 18px; font-weight: 700; color: #fff; margin: 0; }
+.ops-hero__icon-btn {
+  background: rgba(255,255,255,0.15); border: none; color: #fff; width: 32px; height: 32px;
+  border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.ops-hero__icon-btn:active { background: rgba(255,255,255,0.3); }
+.ops-hero__controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ops-hero__switch { display: flex; align-items: center; gap: 8px; }
+.ops-hero__switch-text { font-size: 13px; color: rgba(255,255,255,0.9); display: flex; align-items: center; gap: 4px; }
+.ops-hero__dot { width: 6px; height: 6px; border-radius: 50%; background: rgba(255,255,255,0.4); display: inline-block; }
+.ops-hero__dot--on { background: #52ff8a; box-shadow: 0 0 6px #52ff8a; }
+.ops-hero__pull-btn {
+  background: rgba(255,255,255,0.18); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+  border: 1px solid rgba(255,255,255,0.35); color: #fff; border-radius: var(--radius-sm);
+  padding: 6px 14px; font-size: 13px; font-weight: 500; cursor: pointer;
+  display: flex; align-items: center; gap: 5px; white-space: nowrap;
+}
+.ops-hero__pull-btn:active { background: rgba(255,255,255,0.35); }
+.ops-hero__pull-btn:disabled { opacity: 0.6; }
 
-/* Header */
-.page-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 20px;
-}
-.page-header__left {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-.page-title {
-  font-size: 20px;
-  font-weight: 600;
-  color: #1a1a1a;
-  margin: 0;
-}
-.page-subtitle {
-  font-size: 13px;
-  color: #8c8c8c;
-  background: #f0f5ff;
-  padding: 2px 8px;
-  border-radius: 4px;
-  color: #1677ff;
-}
+.ops-content { padding: 0 14px; }
+.ops-kpi-overlap { margin-top: -24px; position: relative; z-index: 1; }
 
-/* Status Bar */
-.status-bar {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  background: #fff;
-  border-radius: 12px;
-  padding: 16px;
-  margin-bottom: 20px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+.stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+.stat-card {
+  background: #fff; border-radius: var(--radius-md); padding: 14px 14px 10px;
+  box-shadow: var(--shadow-xs); border: 1px solid var(--border); transition: all 0.2s;
 }
-.status-bar__left {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-.status-bar__switch {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.status-bar__label {
-  font-size: 14px;
-  font-weight: 500;
-  color: #1a1a1a;
-}
-.status-bar__text {
-  font-size: 12px;
-  color: #8c8c8c;
-  padding: 2px 8px;
-  background: #f5f5f5;
-  border-radius: 4px;
-}
-.status-bar__text--active {
-  color: #52c41a;
-  background: #f6ffed;
-}
-.status-bar__right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-.status-bar__badge {
-  cursor: default;
-}
-.status-bar__badge-label {
-  font-size: 13px;
-  color: #595959;
-  padding: 4px 8px;
-  background: #fafafa;
-  border-radius: 6px;
-}
+.stat-card__top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.stat-card__label { font-size: 11px; color: var(--text-hint); font-weight: 500; }
+.stat-card__badge { width: 26px; height: 26px; border-radius: var(--radius-xs); display: flex; align-items: center; justify-content: center; }
+.stat-card__value { font-size: 22px; font-weight: 700; line-height: 1.1; margin-bottom: 8px; }
+.stat-card__bottom { display: flex; align-items: center; }
+.stat-card__prev { font-size: 10px; color: var(--text-hint); }
 
-/* Section */
-.section {
-  margin-bottom: 20px;
-}
-.section-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: #1a1a1a;
-  margin-bottom: 12px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
+.ops-cats { display: flex; gap: 8px; overflow-x: auto; -webkit-overflow-scrolling: touch; margin-bottom: 14px; padding: 2px 0; }
+.ops-cats::-webkit-scrollbar { display: none; }
+.ops-cat-pill { padding: 4px 12px; border-radius: 100px; font-size: 12px; font-weight: 600; white-space: nowrap; flex-shrink: 0; }
 
-/* Metric Cards */
-.metrics-scroll {
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  margin: 0 -16px;
-  padding: 0 16px 4px;
-}
-.metrics-grid {
-  display: flex;
-  gap: 12px;
-  min-width: max-content;
-}
-.metric-card {
-  background: #fff;
-  border-radius: 12px;
-  padding: 16px;
-  min-width: 150px;
-  flex: 1;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
-}
-.metric-card__label {
-  font-size: 13px;
-  color: #8c8c8c;
-  margin-bottom: 8px;
-}
-.metric-card__value {
-  font-size: 28px;
-  font-weight: 700;
-  line-height: 1.2;
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-.metric-card__trend {
-  font-size: 12px;
-  font-weight: 400;
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-}
-.trend-up {
-  color: #52c41a;
-}
-.trend-down {
-  color: #ff4d4f;
-}
-.metric-card__sub {
-  font-size: 12px;
-  color: #bfbfbf;
-  margin-top: 4px;
-}
+.dt-card { background: #fff; border-radius: var(--radius-md); box-shadow: var(--shadow-xs); border: 1px solid var(--border); margin-bottom: 12px; overflow: hidden; }
+.dt-card__head { display: flex; align-items: center; justify-content: space-between; padding: 13px 16px 11px; border-bottom: 1px solid var(--divider); }
+.dt-card__title { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.dt-card__badge { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 100px; }
+.dt-card__badge--blue { background: var(--c-primary-bg); color: var(--c-primary); }
+.dt-card__badge--orange { background: var(--c-warning-bg); color: var(--c-warning); }
+.dt-card__body--list { padding: 0; }
+.seg-tabs { display: flex; background: var(--bg-secondary); border-radius: var(--radius-xs); padding: 2px; gap: 1px; }
+.seg-tab { padding: 3px 10px; border: none; background: none; border-radius: 4px; font-size: 11px; color: var(--text-secondary); cursor: pointer; transition: all 0.15s; }
+.seg-tab.active { background: #fff; color: var(--c-primary); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
 
-/* Activity Feed */
-.activity-feed {
-  background: #fff;
-  border-radius: 12px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
-  overflow: hidden;
-}
-.activity-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 14px 16px;
-  border-bottom: 1px solid #f5f5f5;
-  transition: background 0.15s;
-}
-.activity-item:last-child {
-  border-bottom: none;
-}
-.activity-item:active {
-  background: #fafafa;
-}
-.activity-item__dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  margin-top: 6px;
-}
-.activity-item__body {
-  flex: 1;
-  min-width: 0;
-}
-.activity-item__content {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-.activity-item__icon {
-  font-size: 14px;
-  color: #8c8c8c;
-  flex-shrink: 0;
-}
-.activity-item__text {
-  font-size: 14px;
-  color: #1a1a1a;
-  line-height: 1.5;
-  word-break: break-all;
-}
-.activity-item__tag {
-  flex-shrink: 0;
-}
-.activity-item__time {
-  font-size: 12px;
-  color: #bfbfbf;
-  margin-top: 4px;
-}
+.ops-alert-row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--divider); cursor: pointer; }
+.ops-alert-row:last-child { border-bottom: none; }
+.ops-alert-row:active { background: var(--bg-secondary); }
+.ops-alert-row__icon { width: 32px; height: 32px; border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.ops-alert-row__icon--error { background: var(--c-danger-bg); color: var(--c-danger); }
+.ops-alert-row__icon--warning { background: var(--c-warning-bg); color: var(--c-warning); }
+.ops-alert-row__icon--info { background: var(--c-primary-bg); color: var(--c-primary); }
+.ops-alert-row__body { flex: 1; min-width: 0; }
+.ops-alert-row__title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.ops-alert-row__desc { font-size: 12px; color: var(--text-hint); margin-top: 2px; }
+.ops-alert-row__arrow { flex-shrink: 0; }
 
-/* Alerts */
-.alerts-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.alert-card {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 14px 16px;
-  background: #fff;
-  border-radius: 12px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
-  cursor: pointer;
-  transition: all 0.2s ease;
-  border-left: 3px solid transparent;
-}
-.alert-card:active {
-  transform: scale(0.99);
-}
-.alert-card--error {
-  border-left-color: #ff4d4f;
-}
-.alert-card--warning {
-  border-left-color: #faad14;
-}
-.alert-card--info {
-  border-left-color: #1677ff;
-}
-.alert-card__icon {
-  font-size: 20px;
-  flex-shrink: 0;
-  margin-top: 2px;
-}
-.alert-card__body {
-  flex: 1;
-  min-width: 0;
-}
-.alert-card__title {
-  font-size: 14px;
-  font-weight: 500;
-  color: #1a1a1a;
-}
-.alert-card__desc {
-  font-size: 13px;
-  color: #8c8c8c;
-  margin-top: 4px;
-}
-.alert-card__time {
-  font-size: 12px;
-  color: #bfbfbf;
-  margin-top: 4px;
-}
-.alert-card__action {
-  flex-shrink: 0;
-}
+.ops-feed-item { display: flex; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--divider); }
+.ops-feed-item:last-child { border-bottom: none; }
+.ops-feed-item__avatar { width: 34px; height: 34px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; flex-shrink: 0; }
+.ops-feed-item__body { flex: 1; min-width: 0; }
+.ops-feed-item__row1 { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.ops-feed-item__name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.ops-feed-item__comment { font-size: 13px; color: var(--text-secondary); line-height: 1.5; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.ops-feed-item__reply { font-size: 12px; color: var(--c-success); background: var(--c-success-bg); padding: 6px 10px; border-radius: var(--radius-sm); margin-top: 6px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.ops-feed-item__ai-tag { display: inline-block; font-size: 10px; font-weight: 700; background: var(--c-success); color: #fff; padding: 1px 4px; border-radius: 3px; margin-right: 4px; vertical-align: middle; }
+.ops-feed-item__time { font-size: 11px; color: var(--text-hint); margin-top: 4px; }
+.ops-empty-tip { padding: 32px 16px; text-align: center; font-size: 13px; color: var(--text-hint); }
 
-/* Account Stats */
-.account-stats {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.account-stat-card {
-  background: #fff;
-  border-radius: 10px;
-  padding: 14px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-}
-.account-stat-card__header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-.account-stat-card__name {
-  font-size: 15px;
-  font-weight: 600;
-  color: #1a1a1a;
-}
-.account-stat-card__id {
-  font-size: 12px;
-  color: #8c8c8c;
-}
-.account-stat-card__metrics {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
-}
-.account-stat-card__metric {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 8px 0;
-  background: #fafafa;
-  border-radius: 8px;
-}
-.account-stat-card__metric-value {
-  font-size: 20px;
-  font-weight: 700;
-  line-height: 1.2;
-}
-.account-stat-card__metric-label {
-  font-size: 11px;
-  color: #8c8c8c;
-  margin-top: 2px;
-}
+.ops-acc-row { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--divider); gap: 12px; flex-wrap: wrap; }
+.ops-acc-row:last-child { border-bottom: none; }
+.ops-acc-row__left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ops-acc-row__avatar { width: 32px; height: 32px; border-radius: var(--radius-sm); background: var(--c-primary-bg); color: var(--c-primary); display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; flex-shrink: 0; }
+.ops-acc-row__info { min-width: 0; }
+.ops-acc-row__name { font-size: 13px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px; }
+.ops-acc-row__id { font-size: 11px; color: var(--text-hint); }
+.ops-acc-row__stats { display: flex; gap: 10px; flex-shrink: 0; }
+.ops-acc-row__num { font-size: 11px; color: var(--text-hint); white-space: nowrap; }
+.ops-acc-row__num em { font-style: normal; font-weight: 700; font-size: 15px; }
+.ops-safe-bottom { height: calc(var(--tabnav-h) + var(--safe-b) + 16px); }
 
-/* Desktop Breakpoint */
 @media (min-width: 768px) {
-  .ops-workbench {
-    padding: 24px;
-  }
-  .status-bar {
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
-  }
-  .metrics-scroll {
-    overflow-x: visible;
-    margin: 0;
-    padding: 0;
-  }
-  .metrics-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    min-width: unset;
-  }
-  .alert-card:hover {
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-  }
-  .activity-item:hover {
-    background: #fafafa;
-  }
+  .ops-hero { padding: 20px 24px 44px; }
+  .ops-content { padding: 0 24px; max-width: 960px; margin: 0 auto; }
+  .stat-grid { grid-template-columns: repeat(4, 1fr); }
+  .stat-card { padding: 18px; }
+  .stat-card__value { font-size: 26px; }
+  .stat-card:hover { border-color: var(--c-primary); box-shadow: var(--shadow-sm); }
+  .ops-cats { flex-wrap: wrap; overflow: visible; }
+  .ops-feed-item__comment { -webkit-line-clamp: 3; }
+  .ops-acc-row { flex-wrap: nowrap; }
+  .ops-acc-row__name { max-width: 300px; }
+  .ops-alert-row:hover { background: var(--bg-secondary); }
+  .ops-safe-bottom { height: 24px; }
 }
 </style>

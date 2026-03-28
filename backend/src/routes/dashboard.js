@@ -49,7 +49,8 @@ router.get('/overview', auth(), async (req, res) => {
         material_cost,
         roi: cost > 0 ? gmv / cost : 0,
         ctr: show > 0 ? click / show : 0,
-        avg_cvr: click > 0 ? convert / click : 0
+        avg_cvr: click > 0 ? convert / click : 0,
+        avg_convert_cost: convert > 0 ? cost / convert : 0
       };
     };
 
@@ -320,6 +321,167 @@ router.get('/product-trend', auth(), async (req, res) => {
     res.json({ code: 0, data: { dates, entities } });
   } catch (e) {
     logger.error('[Dashboard] product-trend 失败', { error: e.message });
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// 素材详情+7天趋势
+router.get('/material-detail/:material_id', auth(), async (req, res) => {
+  const { material_id } = req.params;
+  const endDate = dayjs().format('YYYY-MM-DD');
+  const startDate = dayjs().subtract(6, 'day').format('YYYY-MM-DD');
+  try {
+    // 今日汇总
+    const [[todayRow]] = await db.query(
+      `SELECT SUM(cost) AS cost, SUM(show_cnt) AS show_cnt, SUM(click_cnt) AS click_cnt,
+        SUM(pay_order_count) AS convert_cnt, SUM(pay_order_amount) AS gmv,
+        CASE WHEN SUM(show_cnt)>0 THEN SUM(click_cnt)/SUM(show_cnt) ELSE 0 END AS ctr,
+        CASE WHEN SUM(cost)>0 THEN SUM(pay_order_amount)/SUM(cost) ELSE 0 END AS roi
+       FROM qc_material_stats WHERE material_id=? AND stat_date=?`, [material_id, endDate]
+    );
+
+    // 7天趋势
+    const [rows] = await db.query(
+      `SELECT DATE_FORMAT(stat_date, '%m-%d') AS date,
+        COALESCE(cost,0) AS cost, COALESCE(show_cnt,0) AS show_cnt, COALESCE(click_cnt,0) AS click_cnt,
+        COALESCE(pay_order_count,0) AS orders, COALESCE(pay_order_amount,0) AS gmv,
+        CASE WHEN cost>0 THEN pay_order_amount/cost ELSE 0 END AS roi
+       FROM qc_material_stats WHERE material_id=? AND stat_date BETWEEN ? AND ?
+       ORDER BY stat_date`, [material_id, startDate, endDate]
+    );
+
+    // 填充缺失日期
+    const rowMap = {};
+    rows.forEach(r => { rowMap[r.date] = r; });
+    const dates = [], cost = [], orders = [], roi = [], show = [], click = [];
+    for (let i = 0; i < 7; i++) {
+      const d = dayjs().subtract(6 - i, 'day').format('MM-DD');
+      const r = rowMap[d] || {};
+      dates.push(d);
+      cost.push(parseFloat(r.cost || 0));
+      orders.push(parseInt(r.orders || 0));
+      roi.push(parseFloat(parseFloat(r.roi || 0).toFixed(2)));
+      show.push(parseInt(r.show_cnt || 0));
+      click.push(parseInt(r.click_cnt || 0));
+    }
+
+    res.json({
+      code: 0,
+      data: {
+        today: todayRow || {},
+        trend: { dates, cost, orders, roi, show, click }
+      }
+    });
+  } catch (e) {
+    logger.error('[Dashboard] material-detail 失败', { error: e.message });
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// 指标分析 - 返回7天趋势 + 驱动因子 + 账户对比（无AI）
+router.post('/analyze-metric', auth(), async (req, res) => {
+  const { metric_key, period = 'today' } = req.body;
+  const endDate = dayjs().format('YYYY-MM-DD');
+  const startDate = dayjs().subtract(6, 'day').format('YYYY-MM-DD');
+  const yesterday = dayjs().subtract(1, 'day').format('YYYY-MM-DD');
+
+  try {
+    // 1. 7天趋势数据
+    const [trendRows] = await db.query(
+      `SELECT DATE_FORMAT(stat_date, '%m-%d') AS date,
+        SUM(cost) AS cost, SUM(cpm) AS gmv, SUM(convert_cnt) AS convert_cnt,
+        SUM(show_cnt) AS show_cnt, SUM(click_cnt) AS click_cnt
+       FROM qc_daily_stats
+       WHERE stat_date BETWEEN ? AND ? AND entity_type = 'campaign'
+       GROUP BY stat_date ORDER BY stat_date`, [startDate, endDate]
+    );
+
+    // 素材维度补充 show/click
+    const [matTrend] = await db.query(
+      `SELECT DATE_FORMAT(stat_date, '%m-%d') AS date,
+        SUM(show_cnt) AS m_show, SUM(click_cnt) AS m_click, SUM(pay_order_count) AS m_orders,
+        SUM(pay_order_amount) AS m_gmv
+       FROM qc_material_stats
+       WHERE stat_date BETWEEN ? AND ?
+       GROUP BY stat_date ORDER BY stat_date`, [startDate, endDate]
+    );
+    const matMap = {};
+    matTrend.forEach(r => { matMap[r.date] = r; });
+
+    const trend = trendRows.map(r => {
+      const m = matMap[r.date] || {};
+      const cost = parseFloat(r.cost || 0);
+      const gmv = parseFloat(r.gmv || 0);
+      const show = parseInt(m.m_show || r.show_cnt || 0);
+      const click = parseInt(m.m_click || r.click_cnt || 0);
+      const convert = parseInt(r.convert_cnt || 0);
+      return {
+        date: r.date, cost, gmv, convert_cnt: convert,
+        show_cnt: show, click_cnt: click,
+        roi: cost > 0 ? parseFloat((gmv / cost).toFixed(2)) : 0,
+        ctr: show > 0 ? parseFloat((click / show).toFixed(4)) : 0,
+        cvr: click > 0 ? parseFloat((convert / click).toFixed(4)) : 0,
+        avg_convert_cost: convert > 0 ? parseFloat((cost / convert).toFixed(2)) : 0,
+      };
+    });
+
+    // 根据 metric_key 提取对应值
+    const metricMap = {
+      cost: r => r.cost,
+      roi: r => r.roi,
+      ctr: r => r.ctr,
+      cvr: r => r.cvr,
+      visitor_count: r => r.show_cnt,
+      avg_convert_cost: r => r.avg_convert_cost,
+    };
+    const getter = metricMap[metric_key] || metricMap.cost;
+    const trendData = { date: trend.map(r => r.date), value: trend.map(r => getter(r)) };
+
+    // 2. 驱动因子（今日 vs 昨日核心指标）
+    const todayIdx = trend.length - 1;
+    const yesterdayIdx = trend.length >= 2 ? trend.length - 2 : 0;
+    const tToday = trend[todayIdx] || {};
+    const tYesterday = trend[yesterdayIdx] || {};
+    const drivers = {
+      labels: ['消耗', '展示量', '点击量', '转化数', 'GMV'],
+      today: [tToday.cost, tToday.show_cnt, tToday.click_cnt, tToday.convert_cnt, tToday.gmv],
+      yesterday: [tYesterday.cost, tYesterday.show_cnt, tYesterday.click_cnt, tYesterday.convert_cnt, tYesterday.gmv],
+    };
+
+    // 3. 各账户该指标对比
+    const [accRows] = await db.query(
+      `SELECT a.advertiser_name AS name,
+        COALESCE(SUM(d.cost), 0) AS cost, COALESCE(SUM(d.cpm), 0) AS gmv,
+        COALESCE(SUM(d.convert_cnt), 0) AS convert_cnt
+       FROM qc_accounts a
+       LEFT JOIN qc_daily_stats d ON a.advertiser_id = d.advertiser_id
+         AND d.stat_date = ? AND d.entity_type = 'campaign'
+       WHERE a.status = 1
+       GROUP BY a.advertiser_id, a.advertiser_name
+       ORDER BY COALESCE(SUM(d.cost), 0) DESC`, [endDate]
+    );
+
+    const breakdown = accRows.filter(r => parseFloat(r.cost) > 0).map(r => {
+      const cost = parseFloat(r.cost);
+      const gmv = parseFloat(r.gmv);
+      const convert = parseInt(r.convert_cnt);
+      let val = cost;
+      if (metric_key === 'roi') val = cost > 0 ? parseFloat((gmv / cost).toFixed(2)) : 0;
+      else if (metric_key === 'avg_convert_cost') val = convert > 0 ? parseFloat((cost / convert).toFixed(2)) : 0;
+      else if (metric_key === 'visitor_count') val = parseInt(r.convert_cnt); // fallback
+      return { name: r.name, value: val };
+    });
+
+    res.json({
+      code: 0,
+      data: {
+        analysis: '', // 无AI分析
+        chart_data: { trend: trendData, drivers, breakdown },
+        roi_detail: null
+      }
+    });
+  } catch (e) {
+    logger.error('[Dashboard] analyze-metric 失败', { error: e.message });
     res.json({ code: 500, msg: e.message });
   }
 });

@@ -41,6 +41,7 @@ app.use('/api/material-audit', require('./routes/material-audit'));
 app.use('/api/super5s', require('./routes/super5s'));
 app.use('/api/runway', require('./routes/runway'));
 app.use('/api/operations', require('./routes/operations'));
+app.use('/api/material-dimensions', require('./routes/material-dimensions'));
 app.use('/api/live', require('./routes/live'));
 app.get('/api/health', (req, res) => res.json({ code: 0, status: 'ok', time: new Date().toISOString() }));
 

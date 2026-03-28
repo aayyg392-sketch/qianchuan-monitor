@@ -120,7 +120,7 @@
         <span class="dt-card__badge dt-card__badge--orange">TOP 10</span>
       </div>
       <div class="dt-card__body dt-card__body--list">
-        <div v-for="(item, idx) in topCreatives" :key="item.entity_id" class="rank-item">
+        <div v-for="(item, idx) in topCreatives" :key="item.entity_id" class="rank-item" @click="openMaterialAnalysis(item)">
           <div class="rank-item__num" :class="['rank-0','rank-1','rank-2'][idx] || 'rank-other'">
             {{ idx + 1 }}
           </div>
@@ -195,7 +195,7 @@
 
               <div v-if="analysisLoading" class="analysis-panel__loading">
                 <div class="spinner"></div>
-                <p>AI 正在分析数据...</p>
+                <p>数据加载中...</p>
               </div>
 
               <template v-else-if="chartData">
@@ -225,15 +225,6 @@
                   </div>
                   <div ref="apBreakdownRef" class="ap-chart" style="height:180px"></div>
                 </div>
-
-                <!-- AI专业指导 -->
-                <div class="ap-section ap-section--ai" v-if="analysisContent">
-                  <div class="ap-section__title">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1677FF" stroke-width="2"><path d="M12 2a7 7 0 0 1 7 7c0 2.38-1.19 4.47-3 5.74V17a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2v-2.26C6.19 13.47 5 11.38 5 9a7 7 0 0 1 7-7z"/><line x1="9" y1="22" x2="15" y2="22"/></svg>
-                    AI 专业指导
-                  </div>
-                  <div class="ap-ai-content" v-html="renderMd(analysisContent)"></div>
-                </div>
               </template>
 
               <div v-else class="analysis-panel__empty">暂无分析数据</div>
@@ -242,8 +233,83 @@
             <!-- 底部操作 -->
             <div class="analysis-panel__footer">
               <button class="analysis-panel__btn" @click="fetchAnalysis" :disabled="analysisLoading">
-                {{ analysisLoading ? '分析中...' : '重新分析' }}
+                {{ analysisLoading ? '加载中...' : '刷新数据' }}
               </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- ===== 素材分析面板 ===== -->
+    <Teleport to="body">
+      <Transition :name="isMobile ? 'slide-up' : 'slide-right'">
+        <div v-if="matPanelOpen" class="analysis-overlay" @click.self="closeMaterialAnalysis">
+          <div :class="['analysis-panel', isMobile ? 'analysis-panel--bottom' : 'analysis-panel--right']">
+            <div class="analysis-panel__header">
+              <div class="analysis-panel__title-row">
+                <span class="analysis-panel__icon" style="background:#FA8C1618;color:#FA8C16">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                </span>
+                <span class="analysis-panel__title">素材分析</span>
+              </div>
+              <button class="analysis-panel__close" @click="closeMaterialAnalysis">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+            <div class="analysis-panel__body">
+              <!-- 素材名称卡片 -->
+              <div class="mat-name-card">
+                <div class="mat-name-text">{{ matDetail?.entity_name || matDetail?.entity_id }}</div>
+              </div>
+              <!-- 核心指标 2x2 -->
+              <div class="mat-kpi-grid" v-if="matDetail">
+                <div class="mat-kpi c1">
+                  <div class="mat-kpi-l">消耗</div>
+                  <div class="mat-kpi-v">¥{{ parseFloat(matDetail.cost || 0).toFixed(0) }}</div>
+                </div>
+                <div class="mat-kpi c2">
+                  <div class="mat-kpi-l">ROI</div>
+                  <div class="mat-kpi-v">{{ matDetail.roi ? parseFloat(matDetail.roi).toFixed(2) : '--' }}</div>
+                </div>
+                <div class="mat-kpi c3">
+                  <div class="mat-kpi-l">转化</div>
+                  <div class="mat-kpi-v">{{ matDetail.convert_cnt || 0 }}</div>
+                </div>
+                <div class="mat-kpi c4">
+                  <div class="mat-kpi-l">CTR</div>
+                  <div class="mat-kpi-v">{{ fmtPct(matDetail.ctr) }}</div>
+                </div>
+              </div>
+              <!-- 趋势图 -->
+              <div v-if="matTrendLoading" class="analysis-panel__loading">
+                <div class="spinner"></div>
+                <p>加载趋势数据...</p>
+              </div>
+              <template v-else-if="matTrendData">
+                <div class="ap-section">
+                  <div class="ap-section__title">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1677FF" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/></svg>
+                    消耗趋势
+                  </div>
+                  <div ref="matCostChartRef" class="ap-chart" style="height:160px"></div>
+                </div>
+                <div class="ap-section">
+                  <div class="ap-section__title">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#00B96B" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/></svg>
+                    转化 & ROI 趋势
+                  </div>
+                  <div ref="matConvertChartRef" class="ap-chart" style="height:160px"></div>
+                </div>
+                <div class="ap-section">
+                  <div class="ap-section__title">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#722ED1" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    展示 & 点击趋势
+                  </div>
+                  <div ref="matTrafficChartRef" class="ap-chart" style="height:160px"></div>
+                </div>
+              </template>
+              <div v-else class="analysis-panel__empty">暂无趋势数据</div>
             </div>
           </div>
         </div>
@@ -418,16 +484,17 @@ const renderApCharts = () => {
   const fmtAxis = v => isRate ? v.toFixed(1)+'%' : isMoney ? (v>=1000?(v/1000).toFixed(1)+'k':'¥'+v.toFixed(0)) : isRoi ? v.toFixed(1) : (v>=10000?(v/10000).toFixed(1)+'w':v.toFixed(0))
 
   // --- 图1: 7天趋势折线图 ---
-  if (apTrendRef.value && cd.trend?.length) {
+  const trendObj = cd.trend
+  if (apTrendRef.value && trendObj?.date?.length) {
     if (apTrendChart) apTrendChart.dispose()
     apTrendChart = echarts.init(apTrendRef.value)
     apTrendChart.setOption({
       grid: { left: 50, right: 16, top: 24, bottom: 28 },
-      xAxis: { type: 'category', data: cd.trend.map(t => t.date), boundaryGap: false, axisLabel: { fontSize: 10, color: '#8C8C8C' }, axisLine: { lineStyle: { color: '#F0F1F3' } }, axisTick: { show: false } },
+      xAxis: { type: 'category', data: trendObj.date, boundaryGap: false, axisLabel: { fontSize: 10, color: '#8C8C8C' }, axisLine: { lineStyle: { color: '#F0F1F3' } }, axisTick: { show: false } },
       yAxis: { type: 'value', splitLine: { lineStyle: { color: '#F5F6F8', type: 'dashed' } }, axisLabel: { fontSize: 10, color: '#8C8C8C', formatter: fmtAxis } },
       tooltip: { trigger: 'axis', backgroundColor: 'rgba(26,26,46,.92)', borderColor: 'transparent', textStyle: { color: '#fff', fontSize: 12 }, formatter: p => `<b>${p[0].axisValue}</b><br/>${metricTitle}: ${fmtVal(p[0].value)}` },
       series: [{
-        type: 'line', data: cd.trend.map(t => t.value), smooth: 0.4, symbol: 'circle', symbolSize: 6,
+        type: 'line', data: trendObj.value, smooth: 0.4, symbol: 'circle', symbolSize: 6,
         lineStyle: { color: metricColor, width: 2.5 },
         itemStyle: { color: metricColor, borderColor: '#fff', borderWidth: 2 },
         areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: metricColor + '30' }, { offset: 1, color: metricColor + '05' }] } },
@@ -470,21 +537,11 @@ const renderApCharts = () => {
     const bd = cd.breakdown
     const names = bd.map(b => b.name.length > 8 ? b.name.slice(0, 8) + '..' : b.name)
     const values = bd.map(b => b.value)
-    const fmtTip = (b) => {
-      let s = `<b>${b.name}</b><br/>`
-      s += `${metricTitle}: ${fmtVal(b.value)}<br/>`
-      s += `消耗: ¥${b.cost.toFixed(0)}<br/>`
-      s += `展示: ${b.show_cnt.toLocaleString()}<br/>`
-      s += `点击: ${b.click_cnt.toLocaleString()}<br/>`
-      s += `CTR: ${b.ctr}% | CVR: ${b.cvr}%<br/>`
-      s += `ROI: ${b.roi} | CPA: ¥${b.cpa}`
-      return s
-    }
     apBreakdownChart.setOption({
       grid: { left: 80, right: 50, top: 8, bottom: 28 },
       xAxis: { type: 'value', axisLabel: { fontSize: 10, color: '#8C8C8C', formatter: v => fmtAxis(v) }, splitLine: { lineStyle: { color: '#F5F6F8', type: 'dashed' } } },
       yAxis: { type: 'category', data: names.reverse(), axisLabel: { fontSize: 11, color: '#333' }, axisTick: { show: false }, axisLine: { lineStyle: { color: '#F0F1F3' } } },
-      tooltip: { trigger: 'axis', backgroundColor: 'rgba(26,26,46,.92)', borderColor: 'transparent', textStyle: { color: '#fff', fontSize: 11 }, formatter: p => fmtTip(bd[bd.length - 1 - p[0].dataIndex]) },
+      tooltip: { trigger: 'axis', backgroundColor: 'rgba(26,26,46,.92)', borderColor: 'transparent', textStyle: { color: '#fff', fontSize: 11 }, formatter: p => { const item = bd[bd.length - 1 - p[0].dataIndex]; return `<b>${item.name}</b><br/>${metricTitle}: ${fmtVal(item.value)}` } },
       series: [{
         type: 'bar', data: [...values].reverse().map((v, i) => ({ value: v, itemStyle: { color: AP_COLORS[(bd.length - 1 - i) % AP_COLORS.length], borderRadius: [0, 4, 4, 0] } })),
         barWidth: '55%',
@@ -498,10 +555,87 @@ const closeAnalysis = () => {
   analysisPanelOpen.value = false
   document.body.style.overflow = ''
   document.documentElement.style.overflow = ''
-  // 销毁弹窗内的图表实例
   apTrendChart?.dispose(); apTrendChart = null
   apCompareChart?.dispose(); apCompareChart = null
   apBreakdownChart?.dispose(); apBreakdownChart = null
+}
+
+// ===== 素材分析面板 =====
+const matPanelOpen = ref(false)
+const matDetail = ref(null)
+const matTrendLoading = ref(false)
+const matTrendData = ref(null)
+const matCostChartRef = ref()
+const matConvertChartRef = ref()
+const matTrafficChartRef = ref()
+let matCostChart = null, matConvertChart = null, matTrafficChart = null
+
+const openMaterialAnalysis = async (item) => {
+  matDetail.value = { ...item }
+  matPanelOpen.value = true
+  matTrendData.value = null
+  matTrendLoading.value = true
+  document.body.style.overflow = 'hidden'
+  try {
+    const res = await request.get(`/dashboard/material-detail/${item.entity_id}`)
+    if (res.code === 0 && res.data) {
+      matDetail.value = { ...matDetail.value, ...res.data.today }
+      matTrendData.value = res.data.trend
+    }
+  } catch (e) { console.error(e) }
+  finally {
+    matTrendLoading.value = false
+    await nextTick()
+    await nextTick()
+    renderMatCharts()
+  }
+}
+
+const closeMaterialAnalysis = () => {
+  matPanelOpen.value = false
+  document.body.style.overflow = ''
+  matCostChart?.dispose(); matCostChart = null
+  matConvertChart?.dispose(); matConvertChart = null
+  matTrafficChart?.dispose(); matTrafficChart = null
+}
+
+const renderMatCharts = () => {
+  const td = matTrendData.value
+  if (!td?.dates?.length) return
+  const chartOpt = (color, name, data, unit) => ({
+    grid: { left: 50, right: 16, top: 24, bottom: 28 },
+    xAxis: { type: 'category', data: td.dates, boundaryGap: false, axisLabel: { fontSize: 10, color: '#8C8C8C' }, axisLine: { lineStyle: { color: '#F0F1F3' } }, axisTick: { show: false } },
+    yAxis: { type: 'value', splitLine: { lineStyle: { color: '#F5F6F8', type: 'dashed' } }, axisLabel: { fontSize: 10, color: '#8C8C8C' } },
+    tooltip: { trigger: 'axis', backgroundColor: 'rgba(26,26,46,.92)', borderColor: 'transparent', textStyle: { color: '#fff', fontSize: 12 } },
+    series: Array.isArray(name) ? name.map((n, i) => ({
+      name: n, type: 'line', data: data[i], smooth: 0.4, symbol: 'circle', symbolSize: 5,
+      lineStyle: { color: color[i], width: 2 }, itemStyle: { color: color[i] },
+      areaStyle: { color: { type: 'linear', x:0, y:0, x2:0, y2:1, colorStops: [{ offset:0, color: color[i]+'25' }, { offset:1, color: color[i]+'05' }] } }
+    })) : [{
+      name, type: 'line', data, smooth: 0.4, symbol: 'circle', symbolSize: 6,
+      lineStyle: { color, width: 2.5 }, itemStyle: { color, borderColor: '#fff', borderWidth: 2 },
+      areaStyle: { color: { type: 'linear', x:0, y:0, x2:0, y2:1, colorStops: [{ offset:0, color: color+'30' }, { offset:1, color: color+'05' }] } },
+      markPoint: { data: [{ type: 'max', name: '最高' }, { type: 'min', name: '最低' }], symbolSize: 36, label: { fontSize: 9 } },
+      markLine: { data: [{ type: 'average', name: '均值' }], lineStyle: { color: '#FF4D4F', type: 'dashed' }, label: { fontSize: 10 } }
+    }],
+    legend: Array.isArray(name) ? { top: 0, right: 0, textStyle: { fontSize: 10, color: '#8C8C8C' } } : undefined
+  })
+
+  if (matCostChartRef.value) {
+    matCostChart?.dispose()
+    matCostChart = echarts.init(matCostChartRef.value)
+    matCostChart.setOption(chartOpt('#1677FF', '消耗', td.cost))
+  }
+  if (matConvertChartRef.value) {
+    matConvertChart?.dispose()
+    matConvertChart = echarts.init(matConvertChartRef.value)
+    matConvertChart.setOption(chartOpt(['#00B96B', '#FA8C16'], ['转化', 'ROI'], [td.orders, td.roi]))
+  }
+  if (matTrafficChartRef.value) {
+    matTrafficChart?.dispose()
+    matTrafficChart = echarts.init(matTrafficChartRef.value)
+    matTrafficChart.setOption(chartOpt(['#722ED1', '#13C2C2'], ['展示', '点击'], [td.show, td.click]))
+  }
 }
 
 const renderMd = (text) => {
@@ -829,9 +963,26 @@ onUnmounted(() => {
 .metric-pill--green { background: var(--c-success-bg); color: var(--c-success); }
 
 /* ===== 排行条目 ===== */
-.rank-item { display: flex; align-items: center; gap: 12px; padding: 11px 16px; border-bottom: 1px solid var(--divider); transition: background 0.15s; }
+.rank-item { display: flex; align-items: center; gap: 12px; padding: 11px 16px; border-bottom: 1px solid var(--divider); transition: background 0.15s; cursor: pointer; }
 .rank-item:last-child { border-bottom: none; }
+.rank-item:hover { background: var(--bg-secondary); }
 .rank-item:active { background: var(--bg-secondary); }
+
+/* 素材分析面板 */
+.mat-name-card { background: #F7F8FA; border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
+.mat-name-text { font-size: 13px; font-weight: 500; color: #4E5969; line-height: 1.6; word-break: break-all; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.mat-kpi-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 16px; }
+.mat-kpi { border-radius: 10px; padding: 14px; }
+.mat-kpi.c1 { background: linear-gradient(135deg, #E8F4FF, #D4EAFF); }
+.mat-kpi.c2 { background: linear-gradient(135deg, #E8FFF3, #C6F7DC); }
+.mat-kpi.c3 { background: linear-gradient(135deg, #FFF7E8, #FFECC6); }
+.mat-kpi.c4 { background: linear-gradient(135deg, #F3E8FF, #E0CFFF); }
+.mat-kpi-l { font-size: 11px; color: #86909C; margin-bottom: 4px; }
+.mat-kpi-v { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; color: #1D2129; }
+.mat-kpi.c1 .mat-kpi-v { color: #1677FF; }
+.mat-kpi.c2 .mat-kpi-v { color: #00B42A; }
+.mat-kpi.c3 .mat-kpi-v { color: #FA8C16; }
+.mat-kpi.c4 .mat-kpi-v { color: #722ED1; }
 .rank-item__num {
   width: 22px; height: 22px; border-radius: 6px;
   display: flex; align-items: center; justify-content: center;
