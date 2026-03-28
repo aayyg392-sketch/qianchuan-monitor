@@ -892,18 +892,19 @@ router.get('/stats/by-video', auth(), async (req, res) => {
 // ============ Account-level Stats (by publisher/advertiser) ============
 router.get('/account-stats', auth(), async (req, res) => {
   try {
-    // 按发布抖音号维度统计（publisher_douyin_id 如 snefe66）
+    // 按千川广告账户维度统计
     const [rows] = await db.query(`
       SELECT
-        COALESCE(NULLIF(l.publisher_douyin_id,''), l.publisher_id) AS aweme_id,
-        COALESCE(NULLIF(l.publisher_name,''), l.publisher_id) AS aweme_name,
+        l.publisher_id AS aweme_id,
+        COALESCE(a.advertiser_name, l.publisher_id) AS aweme_name,
         COUNT(*) AS total_comments,
         SUM(CASE WHEN l.status='success' THEN 1 ELSE 0 END) AS replied_count,
         SUM(CASE WHEN l.status='filtered' THEN 1 ELSE 0 END) AS hidden_count,
         SUM(CASE WHEN l.status='pending' THEN 1 ELSE 0 END) AS pending_count
       FROM ops_comment_logs l
+      LEFT JOIN qc_accounts a ON a.advertiser_id = l.publisher_id
       WHERE l.publisher_id IS NOT NULL AND l.publisher_id != ''
-      GROUP BY aweme_id, aweme_name
+      GROUP BY l.publisher_id, aweme_name
       ORDER BY total_comments DESC
       LIMIT 20
     `);

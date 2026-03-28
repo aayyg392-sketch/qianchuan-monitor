@@ -106,7 +106,7 @@
               <div class="ops-acc-row__avatar">{{ (acc.aweme_name || '?')[0] }}</div>
               <div class="ops-acc-row__info">
                 <div class="ops-acc-row__name">{{ acc.aweme_name || acc.aweme_id }}</div>
-                <div class="ops-acc-row__id" v-if="acc.aweme_id">抖音号: {{ acc.aweme_id }}</div>
+                <div class="ops-acc-row__id" v-if="acc.aweme_id">ID: {{ acc.aweme_id }}</div>
               </div>
             </div>
             <div class="ops-acc-row__stats">
