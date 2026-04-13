@@ -4,8 +4,7 @@
     <!-- ===== 日期筛选行 ===== -->
     <div class="dash-filter">
       <div class="dash-filter__date">
-        <span class="dash-filter__label">今日</span>
-        <span class="dash-filter__value">{{ today }}</span>
+        <span class="dash-filter__sync-main">数据截至 {{ overviewSyncTime || today }}</span>
       </div>
       <div class="dash-filter__right">
         <button class="dash-filter__btn" :class="{ active: periodTab === 'today' }" @click="periodTab='today'; loadData()">今日</button>
@@ -25,7 +24,7 @@
         </div>
         <div class="stat-card__value" :style="{ color: card.color }">{{ card.displayValue }}</div>
         <div class="stat-card__bottom">
-          <span class="stat-card__prev">{{ periodTab === '7d' ? '上周期' : '昨日' }} {{ card.yesterday }}</span>
+          <span class="stat-card__prev">{{ periodTab === '7d' ? '上周期' : (compareType === 'same_hour' ? '昨日同时段' : '昨日') }} {{ card.yesterday }}</span>
           <span class="stat-card__trend" :class="card.growth >= 0 ? 'trend-up' : 'trend-down'">
             {{ card.growth >= 0 ? '↑' : '↓' }}{{ Math.abs(card.growth).toFixed(1) }}%
           </span>
@@ -45,44 +44,6 @@
       </div>
     </div>
 
-    <!-- ===== 产品近7天CTR & 转化率 ===== -->
-    <div class="dt-card" v-loading="trendLoading">
-      <div class="dt-card__head">
-        <span class="dt-card__title">产品CTR·转化率</span>
-        <div class="seg-tabs">
-          <button class="seg-tab" :class="{ active: productTrendTab==='campaign' }" @click="productTrendTab='campaign'; loadProductTrend()">按计划</button>
-          <button class="seg-tab" :class="{ active: productTrendTab==='creative' }" @click="productTrendTab='creative'; loadProductTrend()">按素材</button>
-        </div>
-      </div>
-      <div class="dt-card__body">
-        <div v-if="trendEntities.length">
-          <div ref="trendChartRef" class="chart-box" :style="{ height: isMobile ? '190px' : '240px' }"></div>
-          <div class="trend-table">
-            <div class="trend-table__row trend-table__row--header">
-              <span class="trend-table__name">名称</span>
-              <span class="trend-table__metric">CTR均值</span>
-              <span class="trend-table__metric">转化均值</span>
-              <span class="trend-table__cost">7日消耗</span>
-            </div>
-            <div v-for="(e, i) in trendEntities" :key="e.entity_id" class="trend-table__row" :class="i % 2 === 0 ? '' : 'trend-table__row--alt'">
-              <span class="trend-table__name">
-                <span class="trend-table__dot" :style="{ background: COLORS[i % COLORS.length] }"></span>
-                {{ (e.entity_name || e.entity_id).slice(0, isMobile ? 10 : 20) }}
-              </span>
-              <span class="trend-table__metric" style="color: var(--c-primary)">{{ e.avg_ctr.toFixed(2) }}%</span>
-              <span class="trend-table__metric" style="color: var(--c-success)">{{ e.avg_cvr.toFixed(2) }}%</span>
-              <span class="trend-table__cost">¥{{ e.total_cost >= 1000 ? (e.total_cost/1000).toFixed(1)+'k' : e.total_cost.toFixed(0) }}</span>
-            </div>
-          </div>
-        </div>
-        <div v-else-if="!trendLoading" class="empty-tip">
-          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#BFBFBF" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
-          <p>暂无数据，请先同步广告数据</p>
-        </div>
-        <div v-else class="empty-tip"><a-spin size="small" /></div>
-      </div>
-    </div>
-
     <!-- ===== 账户今日表现 ===== -->
     <div class="dt-card">
       <div class="dt-card__head">
@@ -90,15 +51,16 @@
         <span class="dt-card__badge dt-card__badge--gray">今日</span>
       </div>
       <div class="dt-card__body dt-card__body--list">
-        <div v-for="acc in accounts" :key="acc.advertiser_id" class="account-item">
+        <div v-for="acc in accounts" :key="acc.advertiser_id" class="account-item" @click="openAccountAnalysis(acc)">
           <div class="account-item__avatar">{{ (acc.advertiser_name || '账').charAt(0) }}</div>
           <div class="account-item__info">
             <div class="account-item__name">{{ acc.advertiser_name }}</div>
             <div class="account-item__metrics">
-              <span class="metric-tag">展 {{ fmtNum(acc.today_show) }}</span>
-              <span class="metric-tag">点 {{ fmtNum(acc.today_click) }}</span>
+              <span class="metric-tag">CTR {{ acc.today_show > 0 ? ((acc.today_click / acc.today_show) * 100).toFixed(2) : '0.00' }}%</span>
+              <span class="metric-tag" style="color: var(--c-warning); font-weight: 700; font-size: 13px;">ROI {{ parseFloat(acc.today_roi || 0).toFixed(2) }}</span>
               <span class="metric-tag">转 {{ acc.today_convert || 0 }}</span>
-              <span class="metric-tag" style="color: var(--c-warning); font-weight: 600;">ROI {{ parseFloat(acc.today_roi || 0).toFixed(2) }}</span>
+              <span class="metric-tag" style="color: #00B96B; font-weight: 600;">GMV ¥{{ parseFloat(acc.today_gmv || 0) >= 10000 ? (parseFloat(acc.today_gmv || 0)/10000).toFixed(1)+'w' : parseFloat(acc.today_gmv || 0).toFixed(0) }}</span>
+              <span class="metric-tag" style="color: #722ED1;">智 ¥{{ parseFloat(acc.today_coupon || 0).toFixed(0) }}</span>
             </div>
           </div>
           <div class="account-item__cost">
@@ -118,6 +80,7 @@
       <div class="dt-card__head">
         <span class="dt-card__title">素材消耗榜</span>
         <span class="dt-card__badge dt-card__badge--orange">TOP 10</span>
+        <span v-if="lastSyncTime" class="dt-card__sync-time">截至 {{ lastSyncTime }}</span>
       </div>
       <div class="dt-card__body dt-card__body--list">
         <div v-for="(item, idx) in topCreatives" :key="item.entity_id" class="rank-item" @click="openMaterialAnalysis(item)">
@@ -133,10 +96,11 @@
           </div>
           <div class="rank-item__right">
             <div class="rank-item__cost">¥{{ parseFloat(item.cost || 0).toFixed(0) }}</div>
+            <div class="rank-item__yesterday" v-if="item.yesterday_cost > 0">昨日 ¥{{ parseFloat(item.yesterday_cost).toFixed(0) }}</div>
             <div class="rank-change" v-if="item.rank_change != null" :class="item.rank_change > 0 ? 'rank-up' : item.rank_change < 0 ? 'rank-down' : 'rank-same'">
               {{ item.rank_change > 0 ? '↑' + item.rank_change : item.rank_change < 0 ? '↓' + Math.abs(item.rank_change) : '-' }}
             </div>
-            <div class="rank-change rank-new" v-else>NEW</div>
+            <div class="rank-change rank-new" v-else-if="item.is_new">NEW</div>
           </div>
         </div>
         <div v-if="!topCreatives.length && !loading" class="empty-tip">
@@ -208,13 +172,13 @@
                   <div ref="apTrendRef" class="ap-chart" style="height:160px"></div>
                 </div>
 
-                <!-- 图表2: 驱动因子归因 (今日 vs 昨日) -->
-                <div class="ap-section" v-if="chartData.drivers?.labels?.length">
+                <!-- 图表2: 驱动因子归因 / Top10素材CTR趋势 -->
+                <div class="ap-section" v-if="chartData.drivers?.labels?.length || chartData.drivers?.type === 'top_materials_ctr'">
                   <div class="ap-section__title">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#FA8C16" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-                    {{ analysisCard?.title }} 驱动因子归因
+                    {{ chartData.drivers?.type === 'top_materials_ctr' ? '消耗Top10素材CTR趋势' : analysisCard?.title + ' 驱动因子归因' }}
                   </div>
-                  <div ref="apCompareRef" class="ap-chart" style="height:200px"></div>
+                  <div ref="apCompareRef" class="ap-chart" :style="{ height: chartData.drivers?.type === 'top_materials_ctr' ? '280px' : '200px' }"></div>
                 </div>
 
                 <!-- 图表3: 各账户该指标对比 -->
@@ -316,7 +280,47 @@
       </Transition>
     </Teleport>
 
-  </div>
+  
+    <!-- ===== 账户分析弹窗 ===== -->
+    <Teleport to="body">
+      <div v-if="accPanelOpen" class="analysis-overlay" @click.self="closeAccountAnalysis">
+        <div class="analysis-panel analysis-panel--right acc-panel">
+          <div class="analysis-panel__header">
+            <div style="display:flex;align-items:center;gap:10px">
+              <div class="account-item__avatar" style="width:36px;height:36px;font-size:16px">{{ (accDetail?.advertiser_name||'账').charAt(0) }}</div>
+              <div>
+                <div style="font-weight:600;font-size:14px">{{ accDetail?.advertiser_name }}</div>
+                <div style="font-size:11px;color:#8c8c8c">ID: {{ accDetail?.advertiser_id }}</div>
+              </div>
+            </div>
+            <button class="analysis-panel__close" @click="closeAccountAnalysis">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+          <div class="analysis-panel__body" style="padding:16px">
+            <div class="mat-kpi-grid" v-if="accKpi">
+              <div class="mat-kpi c1"><div class="mat-kpi-v">¥{{ parseFloat(accKpi.today?.cost||0).toFixed(0) }}</div><div class="mat-kpi-l">今日消耗</div><div class="acc-kpi-yd">昨日 ¥{{ parseFloat(accKpi.yesterday?.cost||0).toFixed(0) }}</div></div>
+              <div class="mat-kpi c2"><div class="mat-kpi-v">¥{{ parseFloat(accKpi.today?.gmv||0).toFixed(0) }}</div><div class="mat-kpi-l">GMV</div><div class="acc-kpi-yd">昨日 ¥{{ parseFloat(accKpi.yesterday?.gmv||0).toFixed(0) }}</div></div>
+              <div class="mat-kpi c3"><div class="mat-kpi-v">{{ accKpi.today?.roi || 0 }}</div><div class="mat-kpi-l">ROI</div><div class="acc-kpi-yd">昨日 {{ accKpi.yesterday?.roi || 0 }}</div></div>
+              <div class="mat-kpi c4"><div class="mat-kpi-v">{{ accKpi.today?.orders || 0 }}</div><div class="mat-kpi-l">转化数</div><div class="acc-kpi-yd">昨日 {{ accKpi.yesterday?.orders || 0 }}</div></div>
+              <div class="mat-kpi c1"><div class="mat-kpi-v">{{ accKpi.today?.ctr || 0 }}%</div><div class="mat-kpi-l">CTR</div><div class="acc-kpi-yd">昨日 {{ accKpi.yesterday?.ctr || 0 }}%</div></div>
+              <div class="mat-kpi c2"><div class="mat-kpi-v">¥{{ parseFloat(accKpi.today?.avg_cost||0).toFixed(0) }}</div><div class="mat-kpi-l">成交成本</div><div class="acc-kpi-yd">昨日 ¥{{ parseFloat(accKpi.yesterday?.avg_cost||0).toFixed(0) }}</div></div>
+            </div>
+            <div v-if="accTrendLoading" style="text-align:center;padding:30px"><a-spin /></div>
+            <div v-if="!accTrendLoading && accTrendData">
+              <div class="acc-chart-title">消耗 & GMV 趋势</div>
+              <div ref="accCostChartRef" style="height:180px"></div>
+              <div class="acc-chart-title">转化 & ROI 趋势</div>
+              <div ref="accConvertChartRef" style="height:180px"></div>
+              <div class="acc-chart-title">流量趋势</div>
+              <div ref="accTrafficChartRef" style="height:180px"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+</div>
 </template>
 
 <script setup>
@@ -334,6 +338,9 @@ const productTrendTab = ref('campaign')
 
 const accounts = ref([])
 const topCreatives = ref([])
+const lastSyncTime = ref('')
+const overviewSyncTime = ref('')
+const compareType = ref('full_day')
 const trendEntities = ref([])
 const trendDates = ref([])
 
@@ -435,6 +442,7 @@ const metricSummaryCards = computed(() => {
   const key = analysisCard.value?.key
   if (!cd?.drivers) return []
   const dr = cd.drivers
+  if (dr.type === 'top_materials_ctr') return [] // CTR用独立图表展示
   const t = dr.today || []
   const y = dr.yesterday || []
   const labels = dr.labels || []
@@ -504,12 +512,38 @@ const renderApCharts = () => {
     })
   }
 
-  // --- 图2: 驱动因子归因 (今日 vs 昨日 横向柱状图) ---
-  if (apCompareRef.value && cd.drivers?.labels?.length) {
+  // --- 图2: 驱动因子归因 / Top10素材CTR趋势 ---
+  if (apCompareRef.value && cd.drivers?.type === 'top_materials_ctr' && cd.drivers.materials?.length) {
+    // CTR专用：消耗Top10素材CTR趋势（多条折线）
+    if (apCompareChart) apCompareChart.dispose()
+    apCompareChart = echarts.init(apCompareRef.value)
+    const mats = cd.drivers.materials
+    const allDates = [...new Set(mats.flatMap(m => m.trend.map(t => t.date)))].sort()
+    const matColors = ['#1677FF', '#52C41A', '#FA8C16', '#722ED1', '#EB2F96', '#13C2C2', '#F5222D', '#2F54EB', '#A0D911', '#FF85C0']
+    const series = mats.map((m, i) => ({
+      name: m.name || m.material_id,
+      type: 'line',
+      data: allDates.map(d => { const pt = m.trend.find(t => t.date === d); return pt ? pt.ctr : null }),
+      smooth: true,
+      connectNulls: true,
+      lineStyle: { width: 2 },
+      itemStyle: { color: matColors[i % matColors.length] },
+      symbol: 'circle',
+      symbolSize: 4,
+    }))
+    apCompareChart.setOption({
+      grid: { left: 40, right: 15, top: 30, bottom: 50 },
+      legend: { type: 'scroll', bottom: 0, textStyle: { fontSize: 9 }, itemWidth: 10, itemHeight: 8, formatter: n => n.length > 12 ? n.slice(0, 12) + '..' : n },
+      xAxis: { type: 'category', data: allDates, axisLabel: { fontSize: 10, color: '#888' } },
+      yAxis: { type: 'value', axisLabel: { fontSize: 10, color: '#888', formatter: v => v + '%' }, splitLine: { lineStyle: { type: 'dashed', color: '#f0f0f0' } } },
+      tooltip: { trigger: 'axis', backgroundColor: 'rgba(26,26,46,.92)', borderColor: 'transparent', textStyle: { color: '#fff', fontSize: 11 } },
+      series,
+    })
+  } else if (apCompareRef.value && cd.drivers?.labels?.length) {
+    // 通用驱动因子归因
     if (apCompareChart) apCompareChart.dispose()
     apCompareChart = echarts.init(apCompareRef.value)
     const dr = cd.drivers
-    // 计算每个因子的变化率
     const changeRates = dr.labels.map((_, i) => {
       const t = dr.today[i], y = dr.yesterday[i]
       return y > 0 ? parseFloat(((t - y) / y * 100).toFixed(1)) : 0
@@ -588,6 +622,85 @@ const openMaterialAnalysis = async (item) => {
     await nextTick()
     await nextTick()
     renderMatCharts()
+  }
+}
+
+
+// ===== 账户分析弹窗 =====
+const accPanelOpen = ref(false)
+const accDetail = ref(null)
+const accKpi = ref(null)
+const accTrendLoading = ref(false)
+const accTrendData = ref(null)
+const accCostChartRef = ref()
+const accConvertChartRef = ref()
+const accTrafficChartRef = ref()
+let accCostChart = null, accConvertChart = null, accTrafficChart = null
+
+const openAccountAnalysis = async (acc) => {
+  accDetail.value = { ...acc }
+  accPanelOpen.value = true
+  accKpi.value = null
+  accTrendData.value = null
+  accTrendLoading.value = true
+  document.body.style.overflow = 'hidden'
+  try {
+    const [detailRes, trendRes] = await Promise.all([
+      request.get('/accounts/' + acc.advertiser_id + '/detail'),
+      request.get('/accounts/' + acc.advertiser_id + '/trend')
+    ])
+    if (detailRes.code === 0) accKpi.value = detailRes.data
+    if (trendRes.code === 0) accTrendData.value = trendRes.data
+  } catch (e) { console.error(e) }
+  finally {
+    accTrendLoading.value = false
+    await nextTick()
+    await nextTick()
+    renderAccCharts()
+  }
+}
+
+const closeAccountAnalysis = () => {
+  accPanelOpen.value = false
+  document.body.style.overflow = ''
+  accCostChart?.dispose(); accCostChart = null
+  accConvertChart?.dispose(); accConvertChart = null
+  accTrafficChart?.dispose(); accTrafficChart = null
+}
+
+const renderAccCharts = () => {
+  const td = accTrendData.value
+  if (!td?.dates?.length) return
+  const mkOpt = (colors, names, datasets) => ({
+    grid: { left: 50, right: 50, top: 28, bottom: 28 },
+    legend: { top: 0, right: 0, textStyle: { fontSize: 10, color: '#8C8C8C' } },
+    xAxis: { type: 'category', data: td.dates, boundaryGap: false, axisLabel: { fontSize: 10, color: '#8C8C8C' }, axisLine: { lineStyle: { color: '#F0F1F3' } }, axisTick: { show: false } },
+    yAxis: [
+      { type: 'value', splitLine: { lineStyle: { color: '#F5F6F8', type: 'dashed' } }, axisLabel: { fontSize: 10, color: '#8C8C8C' } },
+      { type: 'value', splitLine: { show: false }, axisLabel: { fontSize: 10, color: '#8C8C8C' } }
+    ],
+    tooltip: { trigger: 'axis', backgroundColor: 'rgba(26,26,46,.92)', borderColor: 'transparent', textStyle: { color: '#fff', fontSize: 11 } },
+    series: names.map((n, i) => ({
+      name: n, type: 'line', data: datasets[i], smooth: 0.4, symbol: 'circle', symbolSize: 5,
+      yAxisIndex: i >= 1 ? 1 : 0,
+      lineStyle: { color: colors[i], width: 2 }, itemStyle: { color: colors[i] },
+      areaStyle: i === 0 ? { color: { type: 'linear', x:0,y:0,x2:0,y2:1, colorStops: [{offset:0,color:colors[i]+'25'},{offset:1,color:colors[i]+'05'}] } } : undefined
+    }))
+  })
+  if (accCostChartRef.value) {
+    accCostChart?.dispose()
+    accCostChart = echarts.init(accCostChartRef.value)
+    accCostChart.setOption(mkOpt(['#1677FF','#FA8C16'], ['消耗','GMV'], [td.cost, td.gmv]))
+  }
+  if (accConvertChartRef.value) {
+    accConvertChart?.dispose()
+    accConvertChart = echarts.init(accConvertChartRef.value)
+    accConvertChart.setOption(mkOpt(['#00B96B','#722ED1'], ['转化','ROI'], [td.orders, td.roi]))
+  }
+  if (accTrafficChartRef.value) {
+    accTrafficChart?.dispose()
+    accTrafficChart = echarts.init(accTrafficChartRef.value)
+    accTrafficChart.setOption(mkOpt(['#1677FF','#00B96B'], ['曝光','点击'], [td.show, td.click]))
   }
 }
 
@@ -698,6 +811,8 @@ const loadData = async () => {
       statCards.value[5].growth = pct(t.avg_convert_cost || 0, y.avg_convert_cost || 0)
 
       statCards.value.forEach(c => { c.displayValue = formatCardValue(c) })
+      overviewSyncTime.value = overviewRes.value.data?.last_sync || ''
+      compareType.value = overviewRes.value.data?.compare_type || 'full_day'
       accounts.value = d.accounts || []
       renderCostChart(d.trend || [])
     } else {
@@ -706,6 +821,7 @@ const loadData = async () => {
 
     if (realtimeRes.status === 'fulfilled') {
       topCreatives.value = realtimeRes.value.data?.top_creatives || []
+      lastSyncTime.value = realtimeRes.value.data?.last_sync || ''
     } else {
       console.error('realtime failed', realtimeRes.reason)
     }
@@ -864,6 +980,7 @@ onUnmounted(() => {
   margin-bottom: 14px; padding: 0 2px;
 }
 .dash-filter__label { font-size: 11px; color: var(--text-hint); margin-right: 4px; }
+.dash-filter__sync-main { font-size: 14px; font-weight: 600; color: var(--text-secondary); }
 .dash-filter__value { font-size: 13px; font-weight: 600; color: var(--text-secondary); }
 .dash-filter__right { display: flex; gap: 4px; }
 .dash-filter__btn {
@@ -1150,5 +1267,55 @@ onUnmounted(() => {
 }
 @media (min-width: 1024px) {
   .stat-grid { grid-template-columns: repeat(6, 1fr); }
+}
+
+.dt-card__sync-time { font-size: 11px; color: #8c8c8c; margin-left: auto; font-weight: 400; }
+.rank-item__yesterday { font-size: 10px; color: #8c8c8c; text-align: right; margin-top: 2px; }
+.rank-new { background: #ff4d4f !important; color: #fff !important; font-size: 10px; padding: 1px 5px; border-radius: 3px; font-weight: 600; }
+
+.dash-filter__sync { font-size: 11px; color: #8c8c8c; margin-left: 12px; font-weight: 400; background: #f5f5f5; padding: 2px 8px; border-radius: 4px; }
+
+.acc-kpi-yd { font-size: 10px; color: #8c8c8c; margin-top: 4px; }
+.acc-chart-title { font-size: 12px; font-weight: 600; color: #333; margin: 16px 0 8px; padding-left: 8px; border-left: 3px solid #1677FF; }
+.account-item { cursor: pointer; transition: background 0.15s; }
+.account-item:hover { background: var(--bg-secondary); }
+
+/* 账户分析弹窗 - 移动端从下方弹出 */
+@media (max-width: 768px) {
+  .acc-panel {
+    position: fixed !important;
+    top: auto !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: 85vh !important;
+    max-height: 85vh !important;
+    border-radius: 16px 16px 0 0 !important;
+    animation: slideUpAcc 0.3s ease-out !important;
+  }
+  .acc-panel .analysis-panel__body {
+    max-height: calc(85vh - 60px) !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch;
+  }
+  .acc-panel .analysis-panel__header {
+    border-radius: 16px 16px 0 0;
+    position: relative;
+  }
+  .acc-panel .analysis-panel__header::before {
+    content: ;
+    display: block;
+    width: 36px;
+    height: 4px;
+    background: #d9d9d9;
+    border-radius: 2px;
+    margin: 0 auto 8px;
+  }
+}
+@keyframes slideUpAcc {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
 }
 </style>

@@ -1,0 +1,339 @@
+const router = require('express').Router();
+const db = require('../db');
+const auth = require('../middleware/auth');
+const logger = require('../logger');
+const axios = require('axios');
+const dayjs = require('dayjs');
+const { execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+
+// Auto-create table
+(async () => {
+  try {
+    await db.query(`CREATE TABLE IF NOT EXISTS qc_super5s (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      batch_id VARCHAR(20) NOT NULL,
+      style VARCHAR(20),
+      hook_text VARCHAR(500),
+      scene_desc VARCHAR(500),
+      source_refs JSON,
+      tts_url VARCHAR(500),
+      video_url VARCHAR(500),
+      video_status VARCHAR(20) DEFAULT 'pending',
+      score INT DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_batch (batch_id),
+      INDEX idx_score (score)
+    )`);
+    logger.info('[Super5s] 表结构就绪');
+  } catch (e) { logger.error('[Super5s] 建表失败', { error: e.message }); }
+})();
+
+const MINIO_BUCKET = 'video/sucaiwang/sucaiwang/92/8777';
+const VIDEO_DIR = '/home/www/qianchuan-monitor/generated-videos';
+const TTS_DIR = '/home/www/qianchuan-monitor/tts-cache';
+
+// ========== GET /list ==========
+router.get('/list', auth(), async (req, res) => {
+  try {
+    const { page = 1, page_size = 30 } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(page_size);
+    const [[{ total }]] = await db.query('SELECT COUNT(*) AS total FROM qc_super5s');
+    const [rows] = await db.query(
+      'SELECT * FROM qc_super5s ORDER BY created_at DESC LIMIT ? OFFSET ?',
+      [parseInt(page_size), offset]
+    );
+    // Stats
+    const [[stats]] = await db.query(
+      `SELECT COUNT(*) AS total, SUM(IF(video_status='done',1,0)) AS video_done, ROUND(AVG(score),0) AS avg_score FROM qc_super5s`
+    );
+    res.json({ code: 0, data: { list: rows, total, stats } });
+  } catch (e) {
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// ========== POST /analyze — AI生成5秒Hook脚本 ==========
+router.post('/analyze', auth(), async (req, res) => {
+  try {
+    const apiKey = process.env.OPENAI_API_KEY;
+    const baseUrl = process.env.OPENAI_BASE_URL || 'https://api.aiclaude.xyz/v1';
+    const model = process.env.OPENAI_MODEL || 'gpt-5';
+
+    if (!apiKey) return res.json({ code: 400, msg: '未配置AI API Key' });
+
+    // 1. 取近7天高消耗+高CTR素材Top30
+    const weekStart = dayjs().subtract(7, 'day').format('YYYY-MM-DD');
+    const today = dayjs().format('YYYY-MM-DD');
+    const [topMaterials] = await db.query(
+      `SELECT title, SUM(cost) AS cost,
+        CASE WHEN SUM(product_show_count)>0 THEN SUM(product_click_count)/SUM(product_show_count)*100 ELSE 0 END AS ctr,
+        CASE WHEN SUM(cost)>0 THEN SUM(pay_order_amount)/SUM(cost) ELSE 0 END AS roi
+       FROM qc_material_stats WHERE stat_date BETWEEN ? AND ? AND cost > 0
+       GROUP BY title ORDER BY SUM(cost) DESC LIMIT 30`,
+      [weekStart, today]
+    );
+
+    if (topMaterials.length === 0) return res.json({ code: 400, msg: '暂无素材数据' });
+
+    // 2. 取人群画像
+    const [audience] = await db.query(
+      `SELECT dimension, dimension_key, pay_order_count FROM qc_audience_stats WHERE advertiser_id='1842321714551812' AND dimension IN ('gender','age') ORDER BY pay_order_count DESC`
+    );
+    const genderInfo = audience.filter(a => a.dimension === 'gender').map(a => `${a.dimension_key}${a.pay_order_count}`).join('、');
+    const ageInfo = audience.filter(a => a.dimension === 'age').slice(0, 3).map(a => a.dimension_key).join('、');
+
+    const materialsText = topMaterials.map((m, i) =>
+      `${i+1}. ${m.title} | 消耗¥${parseFloat(m.cost).toFixed(0)} | CTR ${parseFloat(m.ctr).toFixed(2)}% | ROI ${parseFloat(m.roi).toFixed(2)}`
+    ).join('\n');
+
+    const prompt = `你是抖音洁面护肤类KOC博主，平时就是个爱分享护肤心得的普通女生，说话很自然很真实。
+
+## 近7天高消耗爆款素材（按消耗排序）
+${materialsText}
+
+## 我们的用户是谁
+${genderInfo}，${ageInfo}为主，她们爱刷抖音、关注护肤、容易被闺蜜安利种草。她们喜欢真实分享而不是硬广。
+品牌：雪玲妃百合洁面乳（氨基酸温和洁面，控油不拔干）
+
+## 你的任务
+参考以上爆款素材，写10条开头5秒的Hook口播文案。
+
+## ⚠️ 关键要求：必须像真人说话！
+- 要有语气词："哎""啊""嗯""天哪""救命""姐妹们""不是""真的"
+- 要有口语化停顿和转折："就是说""你知道吗""我跟你说""怎么说呢"
+- 要有真实感受和情绪："我真的被惊到了""不吹不黑""我直接哭了"
+- 禁止书面语和广告腔，不要"打造""焕发""呈现"这类词
+- 像跟闺蜜聊天一样自然、随意、真实
+- 文案控制在15-25个字，要适合5秒内念完
+
+## 好的例子
+✅ "姐妹们别划走！这个洗面奶我真的用了三瓶了"
+✅ "天哪你们看这个泡沫，我第一次见这么绵密的"
+✅ "不是，我前男友都说我皮肤变好了怎么回事"
+✅ "嗯…就是说，你脸上的油其实不用使劲搓"
+
+## 差的例子（不要这样写）
+❌ "氨基酸洁面，温和不刺激"（太广告了）
+❌ "一泵搞定闭口黑头"（太精练没人味）
+❌ "5小时不泛油？"（太工整缺乏活人感）
+
+## 5种风格各2条
+- 痛点型(pain)：从用户真实困扰切入，让她觉得"这说的不就是我吗"
+- 对比型(compare)：真实的使用前后对比体验，有惊喜感
+- 悬念型(suspense)：让人好奇想看下去，制造"然后呢"的感觉
+- 展示型(display)：对着镜头展示产品质地泡沫效果，边展示边感叹
+- 情绪型(emotion)：生活小故事引入，有画面感有代入感
+
+## 输出要求
+输出JSON数组，每条包含：
+- style: 风格英文标识(pain/compare/suspense/display/emotion)
+- hook_text: 5秒口播文案（15-25字，必须像真人说话，有语气词）
+- scene_desc: 画面描述（不超过30字，具体到镜头角度和动作）
+- score: 预估吸引力分数(0-100)
+- ref_title: 参考的爆款素材标题
+
+只输出JSON数组，不要其他内容。`;
+
+    // 3. 调用AI
+    const aiRes = await axios.post(`${baseUrl}/chat/completions`, {
+      model,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 3000,
+      temperature: 0.85,
+    }, { headers: { 'Authorization': `Bearer ${apiKey}` }, timeout: 60000 });
+
+    const content = aiRes.data.choices?.[0]?.message?.content || '';
+    const jsonMatch = content.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) return res.json({ code: 500, msg: 'AI返回格式错误' });
+
+    const hooks = JSON.parse(jsonMatch[0]);
+    const batchId = dayjs().format('YYYYMMDDHHmmss');
+
+    // 4. 存入数据库
+    for (const h of hooks) {
+      await db.query(
+        `INSERT INTO qc_super5s (batch_id, style, hook_text, scene_desc, source_refs, score) VALUES (?, ?, ?, ?, ?, ?)`,
+        [batchId, h.style || 'display', h.hook_text, h.scene_desc, JSON.stringify([h.ref_title || '']), h.score || 75]
+      );
+    }
+
+    logger.info(`[Super5s] AI生成${hooks.length}条5秒Hook, batch=${batchId}`);
+    res.json({ code: 0, msg: `已生成${hooks.length}条5秒Hook`, data: { count: hooks.length, batch_id: batchId } });
+  } catch (e) {
+    logger.error('[Super5s] analyze失败', { error: e.message });
+    res.json({ code: 500, msg: 'AI分析失败: ' + e.message });
+  }
+});
+
+// ========== POST /:id/generate — 生成5秒视频 ==========
+router.post('/:id/generate', auth(), async (req, res) => {
+  try {
+    const [[hook]] = await db.query('SELECT * FROM qc_super5s WHERE id = ?', [req.params.id]);
+    if (!hook) return res.json({ code: 404, msg: 'Hook不存在' });
+
+    // 更新状态
+    await db.query('UPDATE qc_super5s SET video_status = ? WHERE id = ?', ['processing', hook.id]);
+
+    // 1. TTS生成口播音频
+    let ttsPath = null;
+    try {
+      const { MsEdgeTTS, OUTPUT_FORMAT } = require('msedge-tts');
+      const tts = new MsEdgeTTS();
+      await tts.setMetadata('zh-CN-XiaoyiNeural', OUTPUT_FORMAT.AUDIO_24KHZ_96KBITRATE_MONO_MP3);
+      const ttsDir = path.join(TTS_DIR, `super5s_${hook.id}`);
+      fs.mkdirSync(ttsDir, { recursive: true });
+      const result = await tts.toFile(ttsDir, hook.hook_text);
+      ttsPath = result.audioFilePath;
+      logger.info(`[Super5s] TTS生成完成 id=${hook.id}`);
+    } catch (e) {
+      logger.warn('[Super5s] TTS失败', { error: e.message });
+    }
+
+    // 2. 根据画面描述智能匹配视频片段
+    // 按文件大小推断内容类型：
+    //   短片段(300KB-1MB) = 产品特写、LOGO、文字转场
+    //   中片段(1-3MB) = 产品使用、泡沫质地、手部动作、脸部近拍
+    //   长片段(3-8MB) = 达人口播、使用全流程、前后对比
+    const sceneDesc = (hook.scene_desc || '').toLowerCase();
+    const hookStyle = hook.style || '';
+
+    // 根据画面描述选择片段大小范围
+    let minMB = 1, maxMB = 5;
+    if (sceneDesc.includes('特写') || sceneDesc.includes('近拍') || sceneDesc.includes('产品') || sceneDesc.includes('瓶') || hookStyle === 'display') {
+      minMB = 0.5; maxMB = 2; // 短片段=产品特写镜头
+    } else if (sceneDesc.includes('泡沫') || sceneDesc.includes('手') || sceneDesc.includes('洗') || sceneDesc.includes('按') || sceneDesc.includes('质地')) {
+      minMB = 1; maxMB = 4; // 中片段=使用过程
+    } else if (sceneDesc.includes('对比') || sceneDesc.includes('前后') || hookStyle === 'compare') {
+      minMB = 2; maxMB = 6; // 稍长片段=对比镜头
+    } else if (sceneDesc.includes('镜头') || sceneDesc.includes('脸') || sceneDesc.includes('皮肤') || sceneDesc.includes('油')) {
+      minMB = 1; maxMB = 3; // 中片段=面部镜头
+    } else if (hookStyle === 'pain' || hookStyle === 'emotion') {
+      minMB = 2; maxMB = 6; // 情绪/痛点=达人出镜
+    }
+
+    let clipUrl = null;
+    let pickName = null;
+    try {
+      const cacheFile = '/home/www/qianchuan-monitor/video_list_cache.txt';
+      if (fs.existsSync(cacheFile)) {
+        const content = fs.readFileSync(cacheFile, 'utf8');
+        const lines = content.trim().split('\n');
+        const candidates = [];
+        for (const l of lines) {
+          if (!l.includes('.mp4') || l.includes('_h265')) continue;
+          const parts = l.trim().split(/\s+/);
+          const sizeStr = parts[1] || '';
+          if (sizeStr.includes('MiB')) {
+            const mb = parseFloat(sizeStr);
+            if (mb >= minMB && mb <= maxMB) candidates.push({ name: parts[0], mb });
+          }
+          if (candidates.length >= 100) break;
+        }
+        if (candidates.length > 0) {
+          // 从候选中随机选3个，取中间大小的（最可能是正常片段）
+          const shuffled = candidates.sort(() => Math.random() - 0.5).slice(0, 3);
+          shuffled.sort((a, b) => a.mb - b.mb);
+          const pick = shuffled[Math.floor(shuffled.length / 2)];
+          pickName = pick.name;
+          logger.info(`[Super5s] 匹配片段 ${pickName} (${pick.mb}MB) 场景:${sceneDesc} 范围:${minMB}-${maxMB}MB`);
+        }
+      }
+    } catch (e) {
+      logger.warn('[Super5s] 读取缓存失败', { error: e.message });
+    }
+    if (pickName) {
+      try {
+        const out = execSync(`mc share download --expire=168h ${MINIO_BUCKET}/${pickName} 2>/dev/null`, { timeout: 20000 }).toString();
+        const m = out.match(/Share:\s+(http\S+)/);
+        if (m) clipUrl = m[1];
+      } catch (e) {
+        logger.warn('[Super5s] 预签名失败', { error: e.message });
+      }
+    }
+
+    // 3. FFmpeg合成精确5秒视频
+    let videoUrl = null;
+    if (clipUrl) {
+      try {
+        fs.mkdirSync(VIDEO_DIR, { recursive: true });
+        const tmpClip = path.join(VIDEO_DIR, `tmp_s5_${hook.id}.mp4`);
+        const outputFile = `super5s_${hook.id}_${Date.now()}.mp4`;
+        const outputPath = path.join(VIDEO_DIR, outputFile);
+
+        // 下载片段
+        execSync(`curl -sL -o "${tmpClip}" "${clipUrl}"`, { timeout: 60000 });
+
+        // 获取视频时长，随机选取一个好的起始点（避免开头黑屏）
+        let duration = 0;
+        try {
+          const dur = execSync(`ffprobe -v quiet -show_entries format=duration -of csv=p=0 "${tmpClip}"`, { timeout: 5000 }).toString().trim();
+          duration = parseFloat(dur) || 0;
+        } catch {}
+        const startSec = duration > 7 ? (1 + Math.random() * Math.max(0, duration - 7)).toFixed(1) : '0.5';
+
+        if (ttsPath && fs.existsSync(ttsPath)) {
+          // 获取TTS音频时长，视频精确匹配TTS长度（不超过5秒）
+          let ttsDur = 5;
+          try {
+            const td = execSync(`ffprobe -v quiet -show_entries format=duration -of csv=p=0 "${ttsPath}"`, { timeout: 5000 }).toString().trim();
+            ttsDur = Math.min(parseFloat(td) || 5, 5.5);
+          } catch {}
+
+          // 视频从startSec开始，精确裁剪到TTS时长，完全替换音频
+          execSync(
+            `ffmpeg -y -ss ${startSec} -i "${tmpClip}" -i "${ttsPath}" -t ${ttsDur} -map 0:v -map 1:a -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k -r 30 -movflags +faststart -shortest "${outputPath}"`,
+            { timeout: 60000 }
+          );
+        } else {
+          execSync(
+            `ffmpeg -y -ss ${startSec} -i "${tmpClip}" -t 5 -an -c:v libx264 -preset fast -crf 23 -r 30 -movflags +faststart "${outputPath}"`,
+            { timeout: 60000 }
+          );
+        }
+
+        try { fs.unlinkSync(tmpClip); } catch {}
+
+        if (fs.existsSync(outputPath)) {
+          videoUrl = `/generated-videos/${outputFile}`;
+          logger.info(`[Super5s] 视频合成完成 id=${hook.id} start=${startSec}s`);
+        }
+      } catch (e) {
+        logger.warn('[Super5s] FFmpeg合成失败', { error: e.message });
+      }
+    }
+
+    // 4. 更新数据库
+    const status = videoUrl ? 'done' : 'failed';
+    await db.query(
+      'UPDATE qc_super5s SET video_url = ?, video_status = ?, tts_url = ? WHERE id = ?',
+      [videoUrl, status, ttsPath ? `/tts-cache/super5s_${hook.id}/audio.mp3` : null, hook.id]
+    );
+
+    if (videoUrl) {
+      res.json({ code: 0, msg: '5秒视频生成完成', data: { video_url: videoUrl, status: 'done' } });
+    } else if (clipUrl) {
+      // 视频合成失败，但有预签名URL，返回原片段
+      res.json({ code: 0, msg: '视频合成失败，提供原素材预览', data: { video_url: clipUrl, status: 'partial' } });
+    } else {
+      res.json({ code: 500, msg: '视频生成失败' });
+    }
+  } catch (e) {
+    logger.error('[Super5s] generate失败', { error: e.message });
+    await db.query('UPDATE qc_super5s SET video_status = ? WHERE id = ?', ['failed', req.params.id]);
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// ========== DELETE /:id — 删除 ==========
+router.delete('/:id', auth(), async (req, res) => {
+  try {
+    await db.query('DELETE FROM qc_super5s WHERE id = ?', [req.params.id]);
+    res.json({ code: 0, msg: '已删除' });
+  } catch (e) {
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+module.exports = router;

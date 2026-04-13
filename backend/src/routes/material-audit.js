@@ -54,6 +54,8 @@ router.get('/list', auth(), async (req, res) => {
   try {
     const date = req.query.date || dayjs().format('YYYY-MM-DD');
 
+    const aw = req.accWhere ? req.accWhere.replace(/advertiser_id/g, 's.advertiser_id') : '';
+    const ap = req.accParams || [];
     const [list] = await db.query(`
       SELECT
         a.id,
@@ -83,9 +85,9 @@ router.get('/list', auth(), async (req, res) => {
       FROM qc_material_audits a
       LEFT JOIN qc_material_stats s
         ON a.material_id = s.material_id AND a.stat_date = s.stat_date
-      WHERE a.stat_date = ?
+      WHERE a.stat_date = ?${aw}
       ORDER BY a.score ASC
-    `, [date]);
+    `, [date, ...ap]);
 
     // 解析JSON字段 + 组装material_data
     for (const row of list) {

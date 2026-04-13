@@ -138,28 +138,46 @@ const RISK_LIMITS = {
 // 今日概览
 router.get('/overview', auth(), async (req, res) => {
   try {
+    // RBAC: 按publisher_id过滤
+    let pubWhere = '';
+    let pubParams = [];
+    if (req.accountFilter) {
+      pubWhere = ' AND publisher_id IN (' + req.accountFilter.map(() => '?').join(',') + ')';
+      pubParams = [...req.accountFilter];
+    }
+    const baseWhere = `WHERE 1=1${pubWhere}`;
+
     // 总拉取评论数
-    const [[totalRow]] = await db.query(`SELECT COUNT(*) AS total FROM ops_comment_logs`);
+    const [[totalRow]] = await db.query(`SELECT COUNT(*) AS total FROM ops_comment_logs ${baseWhere}`, pubParams);
 
     // 已回复数
-    const [[replyRow]] = await db.query(`SELECT COUNT(*) AS total FROM ops_comment_logs WHERE status='success'`);
+    const [[replyRow]] = await db.query(`SELECT COUNT(*) AS total FROM ops_comment_logs ${baseWhere} AND status='success'`, pubParams);
 
     // 待处理数
-    const [[pendingRow]] = await db.query(`SELECT COUNT(*) AS total FROM ops_comment_logs WHERE status='pending'`);
+    const [[pendingRow]] = await db.query(`SELECT COUNT(*) AS total FROM ops_comment_logs ${baseWhere} AND status='pending'`, pubParams);
 
     // 成功率
     const total = parseInt(totalRow.total) || 0;
     const successCount = parseInt(replyRow.total) || 0;
     const successRate = total > 0 ? Math.round((successCount / total) * 10000) / 100 : 0;
 
-    // 已隐藏差评数
-    const [[hiddenRow]] = await db.query(`SELECT COUNT(*) AS total FROM ops_comment_logs WHERE status='filtered'`);
+    // 已隐藏/过滤数
+    const [[hiddenRow]] = await db.query(`SELECT COUNT(*) AS total FROM ops_comment_logs ${baseWhere} AND status='filtered'`, pubParams);
+
+    // 失败数
+    const [[failedRow]] = await db.query(`SELECT COUNT(*) AS total FROM ops_comment_logs ${baseWhere} AND status='failed'`, pubParams);
 
     // 活跃营销账号数
-    const [[activeRow]] = await db.query(`SELECT COUNT(*) AS total FROM marketing_accounts WHERE status=1`);
+    let mktWhere = 'WHERE status=1';
+    let mktParams = [];
+    if (req.accountFilter) {
+      mktWhere += ' AND advertiser_id IN (' + req.accountFilter.map(() => '?').join(',') + ')';
+      mktParams = [...req.accountFilter];
+    }
+    const [[activeRow]] = await db.query(`SELECT COUNT(*) AS total FROM marketing_accounts ${mktWhere}`, mktParams);
 
     // AI分类统计
-    const [catStats] = await db.query(`SELECT ai_category, COUNT(*) as cnt FROM ops_comment_logs GROUP BY ai_category`);
+    const [catStats] = await db.query(`SELECT ai_category, COUNT(*) as cnt FROM ops_comment_logs ${baseWhere} GROUP BY ai_category`, pubParams);
     const categories = {};
     (catStats || []).forEach(r => { categories[r.ai_category] = parseInt(r.cnt); });
 
@@ -171,6 +189,7 @@ router.get('/overview', auth(), async (req, res) => {
         success_rate: successRate,
         pending_comments: parseInt(pendingRow.total) || 0,
         hidden_comments: parseInt(hiddenRow.total) || 0,
+        failed_comments: parseInt(failedRow.total) || 0,
         active_accounts: parseInt(activeRow.total) || 0,
         categories,
       },
@@ -524,29 +543,35 @@ router.get('/ai-reply/logs', auth(), async (req, res) => {
     const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize) || 20));
     const offset = (page - 1) * pageSize;
 
-    const conditions = ["comment_type='ai_reply'"];
+    const conditions = ["l.comment_type='ai_reply'"];
     const params = [];
 
+    // RBAC过滤
+    if (req.accountFilter) {
+      conditions.push('l.publisher_id IN (' + req.accountFilter.map(() => '?').join(',') + ')');
+      params.push(...req.accountFilter);
+    }
+
     if (req.query.ai_category) {
-      conditions.push('ai_category=?');
+      conditions.push('l.ai_category=?');
       params.push(req.query.ai_category);
     }
     if (req.query.status) {
-      conditions.push('status=?');
+      conditions.push('l.status=?');
       params.push(req.query.status);
     }
 
     const where = `WHERE ${conditions.join(' AND ')}`;
 
     const [[{ total }]] = await db.query(
-      `SELECT COUNT(*) AS total FROM ops_comment_logs ${where}`, params
+      `SELECT COUNT(*) AS total FROM ops_comment_logs l ${where}`, params
     );
 
     const [rows] = await db.query(
       `SELECT l.*, a.account_name
        FROM ops_comment_logs l
        LEFT JOIN ops_douyin_accounts a ON a.id = l.account_id
-       ${where} ORDER BY l.created_at DESC LIMIT ? OFFSET ?`,
+       ${where} ORDER BY (l.reply_content IS NOT NULL AND l.reply_content != '') DESC, l.created_at DESC LIMIT ? OFFSET ?`,
       [...params, pageSize, offset]
     );
 
@@ -567,6 +592,12 @@ router.get('/logs', auth(), async (req, res) => {
 
     const conditions = [];
     const params = [];
+
+    // RBAC过滤
+    if (req.accountFilter) {
+      conditions.push('l.publisher_id IN (' + req.accountFilter.map(() => '?').join(',') + ')');
+      params.push(...req.accountFilter);
+    }
 
     if (req.query.comment_type) {
       conditions.push('l.comment_type=?');
@@ -903,11 +934,11 @@ router.get('/account-stats', auth(), async (req, res) => {
         SUM(CASE WHEN l.status='pending' THEN 1 ELSE 0 END) AS pending_count
       FROM ops_comment_logs l
       LEFT JOIN qc_accounts a ON a.advertiser_id = l.publisher_id
-      WHERE l.publisher_id IS NOT NULL AND l.publisher_id != ''
+      WHERE l.publisher_id IS NOT NULL AND l.publisher_id != ''${req.accountFilter ? ' AND l.publisher_id IN (' + req.accountFilter.map(() => '?').join(',') + ')' : ''}
       GROUP BY l.publisher_id, aweme_name
       ORDER BY total_comments DESC
       LIMIT 20
-    `);
+    `, req.accountFilter ? [...req.accountFilter] : []);
     res.json({ code: 0, data: rows || [] });
   } catch (e) {
     logger.error('[Operations] account-stats error', { error: e.message });

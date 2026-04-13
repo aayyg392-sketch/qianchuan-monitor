@@ -1,0 +1,985 @@
+const express = require('express');
+const router = express.Router();
+const db = require('../db');
+const auth = require('../middleware/auth');
+const logger = require('../logger');
+const axios = require('axios');
+const dayjs = require('dayjs');
+const jimeng = require('../services/jimeng');
+const QianChuanAPI = require('../services/qianchuan');
+const path = require('path');
+const fs = require('fs');
+const { execSync } = require('child_process');
+
+const TTS_DIR = '/home/www/qianchuan-monitor/tts-cache';
+const VIDEO_DIR = '/home/www/qianchuan-monitor/generated-videos';
+
+// ===================== 建表 =====================
+(async () => {
+  try {
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS ai_hot_materials (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        batch_id VARCHAR(50) NOT NULL,
+        script_index INT DEFAULT 0,
+        script_type VARCHAR(30) DEFAULT '',
+        script_title VARCHAR(200) DEFAULT '',
+        script_content JSON,
+        analysis_summary LONGTEXT,
+        analysis_data JSON,
+        jimeng_task_id VARCHAR(100) DEFAULT '',
+        video_url VARCHAR(500) DEFAULT '',
+        video_duration INT DEFAULT 5,
+        pipeline_status ENUM('analyzing','scripting','generating','auditing','ready','pushed','tracking','completed','failed') DEFAULT 'analyzing',
+        error_msg TEXT,
+        audit_score INT DEFAULT 0,
+        audit_passed TINYINT(1) DEFAULT 0,
+        audit_detail JSON,
+        pushed_accounts JSON,
+        push_status VARCHAR(20) DEFAULT '',
+        qc_material_ids JSON,
+        total_cost DECIMAL(12,2) DEFAULT 0,
+        total_orders INT DEFAULT 0,
+        total_gmv DECIMAL(12,2) DEFAULT 0,
+        avg_roi DECIMAL(6,2) DEFAULT 0,
+        avg_ctr DECIMAL(6,4) DEFAULT 0,
+        is_hot TINYINT(1) DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_batch (batch_id),
+        INDEX idx_status (pipeline_status),
+        INDEX idx_hot (is_hot)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS ai_hot_material_daily_stats (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        material_db_id INT NOT NULL,
+        qc_material_id VARCHAR(50),
+        stat_date DATE,
+        cost DECIMAL(12,2) DEFAULT 0,
+        pay_order_count INT DEFAULT 0,
+        pay_order_amount DECIMAL(12,2) DEFAULT 0,
+        ctr DECIMAL(6,4) DEFAULT 0,
+        convert_rate DECIMAL(6,4) DEFAULT 0,
+        roi DECIMAL(6,2) DEFAULT 0,
+        play_3s_rate DECIMAL(6,4) DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_mid_date (material_db_id, stat_date),
+        INDEX idx_date (stat_date)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS ai_hot_optimization_log (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        batch_id VARCHAR(50) NOT NULL,
+        iteration INT DEFAULT 1,
+        optimization_insight LONGTEXT,
+        applied_changes TEXT,
+        prev_avg_cost DECIMAL(12,2) DEFAULT 0,
+        new_avg_cost DECIMAL(12,2) DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+    logger.info('[AIHotMaterial] 表结构就绪');
+  } catch (e) {
+    logger.error('[AIHotMaterial] 建表失败', { error: e.message });
+  }
+})();
+
+// ===================== 仪表盘统计 =====================
+router.get('/dashboard', auth(), async (req, res) => {
+  try {
+    const [[stats]] = await db.query(`
+      SELECT
+        COUNT(DISTINCT batch_id) AS total_batches,
+        COUNT(*) AS total_materials,
+        SUM(CASE WHEN pipeline_status IN ('ready','pushed','tracking','completed') THEN 1 ELSE 0 END) AS success_count,
+        SUM(CASE WHEN pipeline_status IN ('pushed','tracking','completed') THEN 1 ELSE 0 END) AS pushed_count,
+        SUM(CASE WHEN pipeline_status IN ('tracking','completed') THEN 1 ELSE 0 END) AS tracking_count,
+        SUM(CASE WHEN is_hot=1 THEN 1 ELSE 0 END) AS hot_count,
+        COALESCE(SUM(total_cost), 0) AS total_cost,
+        CASE WHEN SUM(total_cost)>0 THEN ROUND(SUM(total_gmv)/SUM(total_cost), 2) ELSE 0 END AS avg_roi
+      FROM ai_hot_materials
+    `);
+    const [[today]] = await db.query(
+      'SELECT COUNT(DISTINCT batch_id) AS today_batches FROM ai_hot_materials WHERE DATE(created_at) = CURDATE()'
+    );
+    res.json({ code: 0, data: { ...stats, today_batches: today.today_batches } });
+  } catch (e) {
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// ===================== 列表 =====================
+router.get('/list', auth(), async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const pageSize = Math.min(50, parseInt(req.query.pageSize) || 10);
+    const status = req.query.status || '';
+    const offset = (page - 1) * pageSize;
+    let where = '1=1';
+    const params = [];
+    if (status) { where += ' AND pipeline_status = ?'; params.push(status); }
+    const [[{ total }]] = await db.query(`SELECT COUNT(*) AS total FROM ai_hot_materials WHERE ${where}`, params);
+    const [list] = await db.query(
+      `SELECT id, batch_id, script_index, script_type, script_title, pipeline_status,
+              video_url, audit_score, audit_passed, total_cost, total_orders, avg_roi, avg_ctr, is_hot,
+              push_status, created_at, updated_at
+       FROM ai_hot_materials WHERE ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+      [...params, pageSize, offset]
+    );
+    res.json({ code: 0, data: { list, total, page, pageSize } });
+  } catch (e) {
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// ===================== 详情 =====================
+router.get('/detail/:id', auth(), async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT * FROM ai_hot_materials WHERE id = ?', [req.params.id]);
+    if (!rows.length) return res.json({ code: 404, msg: '不存在' });
+    const row = rows[0];
+    ['script_content','analysis_data','audit_detail','pushed_accounts','qc_material_ids'].forEach(f => {
+      if (typeof row[f] === 'string') try { row[f] = JSON.parse(row[f]); } catch(e) {}
+    });
+    const [dailyStats] = await db.query(
+      'SELECT * FROM ai_hot_material_daily_stats WHERE material_db_id = ? ORDER BY stat_date', [row.id]
+    );
+    row.daily_stats = dailyStats;
+    res.json({ code: 0, data: row });
+  } catch (e) {
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// ===================== 一键生成 =====================
+router.post('/generate', auth(), async (req, res) => {
+  const batchId = `hot_${dayjs().format('YYYYMMDDHHmmss')}_${Math.random().toString(36).slice(2,6)}`;
+  res.json({ code: 0, msg: '流水线启动', data: { batchId } });
+  runPipeline(batchId).catch(e => {
+    logger.error('[AIHotMaterial] pipeline failed', { batchId, error: e.message });
+  });
+});
+
+// ===================== 查询批次状态 =====================
+router.get('/status/:batchId', auth(), async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT id, script_index, script_title, pipeline_status, video_url, audit_score, error_msg FROM ai_hot_materials WHERE batch_id = ? ORDER BY script_index',
+      [req.params.batchId]
+    );
+    const allDone = rows.length > 0 && rows.every(r => ['ready','pushed','tracking','completed','failed'].includes(r.pipeline_status));
+    res.json({ code: 0, data: { items: rows, completed: allDone } });
+  } catch (e) {
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// ===================== 推送到千川 =====================
+router.post('/push/:id', auth(), async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT * FROM ai_hot_materials WHERE id = ?', [req.params.id]);
+    if (!rows.length) return res.json({ code: 404, msg: '不存在' });
+    if (!rows[0].video_url) return res.json({ code: 400, msg: '视频未生成' });
+    res.json({ code: 0, msg: '开始推送' });
+    pushToQianchuan(rows[0]).catch(e => logger.error('[AIHotMaterial] push failed', { error: e.message }));
+  } catch (e) {
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// ===================== 批量推送 =====================
+router.post('/push-batch/:batchId', auth(), async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      "SELECT * FROM ai_hot_materials WHERE batch_id = ? AND pipeline_status = 'ready' AND video_url != ''",
+      [req.params.batchId]
+    );
+    if (!rows.length) return res.json({ code: 400, msg: '无可推送素材' });
+    res.json({ code: 0, msg: `开始推送${rows.length}个素材` });
+    for (const item of rows) {
+      await pushToQianchuan(item).catch(e => logger.error('[AIHotMaterial] push failed', { id: item.id, error: e.message }));
+    }
+  } catch (e) {
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// ===================== 投放跟踪 =====================
+router.get('/tracking/:id', auth(), async (req, res) => {
+  try {
+    const [stats] = await db.query('SELECT * FROM ai_hot_material_daily_stats WHERE material_db_id = ? ORDER BY stat_date', [req.params.id]);
+    res.json({ code: 0, data: stats });
+  } catch (e) {
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// ===================== 优化洞察 =====================
+router.get('/insights', auth(), async (req, res) => {
+  try {
+    const [logs] = await db.query('SELECT * FROM ai_hot_optimization_log ORDER BY created_at DESC LIMIT 10');
+    res.json({ code: 0, data: logs });
+  } catch (e) {
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// ===================== 重试 =====================
+router.post('/retry/:id', auth(), async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT * FROM ai_hot_materials WHERE id = ?', [req.params.id]);
+    if (!rows.length) return res.json({ code: 404 });
+    res.json({ code: 0, msg: '重新生成中' });
+    retryItem(rows[0]).catch(e => logger.error('[AIHotMaterial] retry failed', { error: e.message }));
+  } catch (e) {
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// ===================== TTS语音合成+视频合并 =====================
+async function addTTSToVideo(videoUrl, voiceoverText, dbId) {
+  try {
+    const { MsEdgeTTS, OUTPUT_FORMAT } = require('msedge-tts');
+
+    const ttsDir = path.join(TTS_DIR, 'hot_' + dbId);
+    fs.mkdirSync(ttsDir, { recursive: true });
+
+    const tts = new MsEdgeTTS();
+    await tts.setMetadata('zh-CN-XiaoxiaoNeural', OUTPUT_FORMAT.AUDIO_24KHZ_96KBITRATE_MONO_MP3);
+    const ttsResult = await tts.toFile(ttsDir, voiceoverText);
+    const ttsPath = ttsResult.audioFilePath;
+    logger.info('[AIHotMaterial] TTS生成完成 id=' + dbId);
+
+    if (!fs.existsSync(VIDEO_DIR)) fs.mkdirSync(VIDEO_DIR, { recursive: true });
+    const tmpVideo = path.join(VIDEO_DIR, 'hot_tmp_' + dbId + '.mp4');
+    const finalVideo = path.join(VIDEO_DIR, 'hot_final_' + dbId + '.mp4');
+
+    // 下载即梦视频
+    const videoResp = await axios.get(videoUrl, { responseType: 'stream' });
+    const writer = fs.createWriteStream(tmpVideo);
+    videoResp.data.pipe(writer);
+    await new Promise((resolve, reject) => { writer.on('finish', resolve); writer.on('error', reject); });
+
+    // 获取TTS音频时长
+    let ttsDur = 5;
+    try {
+      const td = execSync('ffprobe -v quiet -show_entries format=duration -of csv=p=0 "' + ttsPath + '"', { timeout: 5000 }).toString().trim();
+      ttsDur = Math.min(parseFloat(td) || 5, 5.5);
+    } catch(e) {}
+
+    // ffmpeg合并
+    execSync(
+      'ffmpeg -y -i "' + tmpVideo + '" -i "' + ttsPath + '" -t ' + ttsDur + ' -map 0:v -map 1:a -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k -r 30 -movflags +faststart -shortest "' + finalVideo + '"',
+      { timeout: 60000 }
+    );
+    logger.info('[AIHotMaterial] 音视频合并完成 id=' + dbId);
+
+    if (fs.existsSync(tmpVideo)) fs.unlinkSync(tmpVideo);
+    return '/generated-videos/hot_final_' + dbId + '.mp4';
+  } catch (e) {
+    logger.error('[AIHotMaterial] TTS合并失败 id=' + dbId, { error: e.message });
+    return videoUrl;
+  }
+}
+
+// ===================== 核心流水线 =====================
+async function runPipeline(batchId) {
+  logger.info('[AIHotMaterial] 流水线开始 ' + batchId);
+
+  const periodEnd = dayjs().format('YYYY-MM-DD');
+  const periodStart = dayjs().subtract(15, 'day').format('YYYY-MM-DD');
+
+  let [hotMaterials] = await db.query(`
+    SELECT material_id, title,
+      SUM(cost) AS total_cost, SUM(pay_order_count) AS orders, SUM(pay_order_amount) AS gmv,
+      CASE WHEN SUM(cost)>0 THEN ROUND(SUM(pay_order_amount)/SUM(cost), 2) ELSE 0 END AS roi,
+      ROUND(AVG(CASE WHEN cost >= 100 THEN product_ctr END), 2) AS avg_ctr,
+      ROUND(AVG(CASE WHEN cost >= 100 THEN convert_rate END), 2) AS avg_cvr,
+      ROUND(AVG(CASE WHEN cost >= 100 THEN play_duration_3s_rate END), 2) AS avg_3s_rate,
+      ROUND(AVG(CASE WHEN cost >= 100 THEN play_over_rate END), 2) AS avg_finish_rate,
+      MAX(video_duration) AS duration
+    FROM qc_material_stats WHERE stat_date >= ? AND cost > 0
+    GROUP BY material_id, title HAVING SUM(cost) >= 5000
+    ORDER BY SUM(cost) DESC LIMIT 20
+  `, [periodStart]);
+
+  if (hotMaterials.length === 0) {
+    [hotMaterials] = await db.query(`
+      SELECT material_id, title, SUM(cost) AS total_cost, SUM(pay_order_count) AS orders,
+        CASE WHEN SUM(cost)>0 THEN ROUND(SUM(pay_order_amount)/SUM(cost), 2) ELSE 0 END AS roi,
+        ROUND(AVG(product_ctr), 2) AS avg_ctr, ROUND(AVG(convert_rate), 2) AS avg_cvr,
+        ROUND(AVG(play_duration_3s_rate), 2) AS avg_3s_rate
+      FROM qc_material_stats WHERE stat_date >= ? AND cost > 0
+      GROUP BY material_id, title HAVING SUM(cost) >= 1000
+      ORDER BY SUM(cost) DESC LIMIT 10
+    `, [periodStart]);
+    if (hotMaterials.length === 0) { logger.warn('[AIHotMaterial] 无数据'); return; }
+  }
+
+  const hotText = hotMaterials.map((m, i) =>
+    `${i+1}. 「${m.title}」 消耗:¥${parseFloat(m.total_cost||0).toFixed(0)} | 成交:${m.orders}单 | ROI:${m.roi} | CTR:${parseFloat(m.avg_ctr||0).toFixed(2)}% | 转化率:${parseFloat(m.avg_cvr||0).toFixed(2)}% | 3s留存:${parseFloat(m.avg_3s_rate||0).toFixed(2)}%`
+  ).join('\n');
+
+  const scripts = await generateScripts(hotText, hotMaterials.length, periodStart, periodEnd);
+
+  for (let i = 0; i < scripts.length; i++) {
+    const script = scripts[i];
+    const [insertResult] = await db.query(
+      `INSERT INTO ai_hot_materials (batch_id, script_index, script_type, script_title, script_content, analysis_summary, analysis_data, pipeline_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'generating')`,
+      [batchId, i + 1, script.type, script.title, JSON.stringify(script), hotText, JSON.stringify(hotMaterials)]
+    );
+    const dbId = insertResult.insertId;
+
+    try {
+      // 分段生成视频：每个scene独立生成，最后拼接
+      const scenes = script.scenes || [];
+      const segmentUrls = [];
+      const segmentVoiceovers = [];
+      
+      for (let si = 0; si < scenes.length; si++) {
+        const scene = scenes[si];
+        const scenePrompt = scene.ccr_prompt || scene.description || script.title;
+        // 解析时长：从 "0-10s" 提取秒数
+        const timeMatch = scene.time?.match(/(\d+)-(\d+)/);
+        const sceneDuration = timeMatch ? Math.min(Math.max(parseInt(timeMatch[2]) - parseInt(timeMatch[1]), 5), 10) : 10;
+        
+        logger.info(`[AIHotMaterial] 生成分镜 #${i+1}-${si+1}/${scenes.length}`, { duration: sceneDuration });
+        
+        try {
+          const taskId = await jimeng.submitText2Video(scenePrompt, { duration: Math.min(sceneDuration, 10) });
+          const videoUrl = await jimeng.waitForVideo(taskId);
+          segmentUrls.push(videoUrl);
+          if (scene.voiceover) segmentVoiceovers.push(scene.voiceover);
+          logger.info(`[AIHotMaterial] 分镜完成 #${i+1}-${si+1}`, { videoUrl: videoUrl?.substring(0, 50) });
+        } catch (segErr) {
+          logger.warn(`[AIHotMaterial] 分镜失败 #${i+1}-${si+1}`, { error: segErr.message });
+          // 继续其他分镜
+        }
+      }
+      
+      if (segmentUrls.length === 0) throw new Error('所有分镜生成失败');
+      
+      // 拼接分段视频
+      const path = require('path');
+      const { execSync } = require('child_process');
+      const tmpDir = '/tmp/hot_material_' + dbId;
+      execSync(`mkdir -p ${tmpDir}`);
+      
+      // 下载所有分段
+      for (let si = 0; si < segmentUrls.length; si++) {
+        execSync(`curl -s -o ${tmpDir}/seg_${si}.mp4 "${segmentUrls[si]}"`, { timeout: 30000 });
+      }
+      
+      // 创建拼接列表
+      const concatList = segmentUrls.map((_, si) => `file '${tmpDir}/seg_${si}.mp4'`).join('\n');
+      require('fs').writeFileSync(`${tmpDir}/concat.txt`, concatList);
+      
+      // ffmpeg拼接
+      const mergedFile = `${tmpDir}/merged.mp4`;
+      execSync(`ffmpeg -y -f concat -safe 0 -i ${tmpDir}/concat.txt -c copy ${mergedFile}`, { timeout: 60000 });
+      
+      // TTS语音合成
+      const voiceoverText = segmentVoiceovers.join('，');
+      let finalUrl;
+      
+      if (voiceoverText) {
+        try {
+          // 生成TTS音频
+          const { MsEdgeTTS } = require('msedge-tts');
+          const tts = new MsEdgeTTS();
+          await tts.setMetadata('zh-CN-XiaoxiaoNeural', { rate: '+5%', pitch: '+0Hz' });
+          const ttsFile = `${tmpDir}/tts.mp3`;
+          const readable = tts.toStream(voiceoverText);
+          const writeStream = require('fs').createWriteStream(ttsFile);
+          await new Promise((resolve, reject) => { readable.pipe(writeStream); writeStream.on('finish', resolve); writeStream.on('error', reject); });
+          
+          // 合并音频到视频
+          const finalFile = `${tmpDir}/final.mp4`;
+          execSync(`ffmpeg -y -i ${mergedFile} -i ${ttsFile} -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 -shortest ${finalFile}`, { timeout: 60000 });
+          
+          // 上传到服务器静态目录
+          const outputName = `hot_${dbId}_${Date.now()}.mp4`;
+          const outputDir = '/home/www/qianchuan-monitor/backend/public/videos';
+          execSync(`mkdir -p ${outputDir} && cp ${finalFile} ${outputDir}/${outputName}`);
+          finalUrl = `/videos/${outputName}`;
+          logger.info(`[AIHotMaterial] TTS拼接完成 #${i+1}`, { segments: segmentUrls.length });
+        } catch (ttsErr) {
+          logger.warn(`[AIHotMaterial] TTS失败，使用无声拼接视频 #${i+1}`, { error: ttsErr.message });
+          const outputName = `hot_${dbId}_${Date.now()}.mp4`;
+          const outputDir = '/home/www/qianchuan-monitor/backend/public/videos';
+          execSync(`mkdir -p ${outputDir} && cp ${mergedFile} ${outputDir}/${outputName}`);
+          finalUrl = `/videos/${outputName}`;
+        }
+      } else {
+        const outputName = `hot_${dbId}_${Date.now()}.mp4`;
+        const outputDir = '/home/www/qianchuan-monitor/backend/public/videos';
+        execSync(`mkdir -p ${outputDir} && cp ${mergedFile} ${outputDir}/${outputName}`);
+        finalUrl = `/videos/${outputName}`;
+      }
+      
+      // 清理临时文件
+      execSync(`rm -rf ${tmpDir}`);
+      
+      await db.query('UPDATE ai_hot_materials SET jimeng_task_id = ? WHERE id = ?', ['multi_segment', dbId]);
+      await db.query("UPDATE ai_hot_materials SET video_url = ?, pipeline_status = 'ready' WHERE id = ?", [finalUrl, dbId]);
+    } catch (e) {
+      logger.error(`[AIHotMaterial] 生成失败 #${i+1}`, { error: e.message });
+      await db.query("UPDATE ai_hot_materials SET pipeline_status = 'failed', error_msg = ? WHERE id = ?", [e.message, dbId]);
+    }
+  }
+
+  if (global.wsBroadcast) global.wsBroadcast({ type: 'ai_hot_material', event: 'pipeline_done', batchId });
+  logger.info('[AIHotMaterial] 流水线完成 ' + batchId);
+}
+
+// ===================== AI生成脚本 =====================
+async function generateScripts(hotText, hotCount, start, end) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  const baseUrl = process.env.OPENAI_BASE_URL || 'https://api.aiclaude.xyz/v1';
+  const model = process.env.OPENAI_MODEL || 'gpt-5';
+
+  const prompt = `你是雪玲妃品牌（百合氨基酸控油洁面乳/绿泥控油洁面乳）的抖音千川爆款素材创作专家。
+
+## 核心规则（必须严格遵守）
+1. **禁止出现产品画面**：因为AI无法准确生成雪玲妃产品外观，脚本和CCR画面描述中绝对不要出现"产品瓶身""包装""logo""标签"等产品相关画面。只描述人物、皮肤状态、使用动作、效果对比。
+2. **脚本时长60-90秒**：完整带货短视频脚本，包含6-8个分镜段落。
+3. **每个分镜10-15秒**：每段有独立的画面描述和口播文案。
+4. **真实UGC风格**：像真人自拍vlog，不要广告感，不要棚拍感。手机手持、浴室/卧室/洗手间场景。
+5. **画面只拍人**：面部特写、手部动作、皮肤状态对比（出油→清爽）、使用泡沫洗脸的动作。不拍产品。
+
+## 素材快报洞察
+- 特征：短平快直给卖点（500g大容量/温和清洁/油皮友好）、口播实测+近景质地/清洁对比、首屏强钩子
+- 建议：15-20秒三段式开头（强钩子→实测对比→利益点），画面高亮白底，手部出泡/纸巾吸油对比
+
+## 爆款素材数据（${hotCount}个，${start} ~ ${end}）
+${hotText}
+
+## 生成要求
+生成3条60-90秒完整脚本。每条必须：
+1. 符合巨量千川"优质素材"标准：前3秒强钩子、使用效果展示、有效CTA
+2. 时长60-90秒，竖屏9:16
+3. 参考爆款素材的高CTR和高转化话术特征
+4. 6-8个分镜，每个分镜10-15秒
+5. 口播话术要口语化、真实、有感染力，像闺蜜推荐
+6. 画面描述只涉及人物动作和皮肤状态，禁止出现产品
+
+3条脚本分别针对：
+- 第1条：高转化型（type: high_convert）— 侧重使用效果和性价比
+- 第2条：高CTR型（type: ctr_boost）— 侧重前3秒爆点和视觉冲击
+- 第3条：痛点共鸣型（type: pain_point）— 侧重皮肤问题和解决方案
+
+请严格按以下JSON格式输出（不要加markdown代码块标记）：
+[
+  {
+    "type": "high_convert",
+    "title": "脚本标题（10字以内）",
+    "hook": "前3秒强钩子文案",
+    "duration": 75,
+    "scenes": [
+      {"time": "0-10s", "description": "只描述人物和动作，不提产品。例：年轻女生浴室镜前素颜自拍，T区明显出油反光，皱眉摸脸", "voiceover": "姐妹们你们看我这个T区，油到能煎鸡蛋了", "ccr_prompt": "竖屏9:16。浴室镜前，20岁中国女生素颜自拍，面部T区油光明显，手指点额头，皱眉表情，手机手持拍摄，自然光，真实UGC风格"},
+      {"time": "10-20s", "description": "...", "voiceover": "...", "ccr_prompt": "竖屏9:16。..."},
+      {"time": "20-35s", "description": "...", "voiceover": "...", "ccr_prompt": "竖屏9:16。..."},
+      {"time": "35-50s", "description": "...", "voiceover": "...", "ccr_prompt": "竖屏9:16。..."},
+      {"time": "50-65s", "description": "...", "voiceover": "...", "ccr_prompt": "竖屏9:16。..."},
+      {"time": "65-75s", "description": "...", "voiceover": "...", "ccr_prompt": "竖屏9:16。..."}
+    ],
+    "key_selling_points": ["卖点1", "卖点2"],
+    "cta": "行动号召语"
+  }
+]`;
+
+  if (!apiKey) return getDefaultScripts();
+
+  try {
+    const resp = await axios.post(`${baseUrl}/chat/completions`, {
+      model,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 8000, temperature: 0.8,
+    }, { headers: { 'Authorization': `Bearer ${apiKey}` }, timeout: 90000 });
+
+    const content = resp.data.choices?.[0]?.message?.content || '';
+    const jsonMatch = content.match(/\[[\s\S]*\]/);
+    if (jsonMatch) {
+      const scripts = JSON.parse(jsonMatch[0]);
+      if (Array.isArray(scripts) && scripts.length >= 3) return scripts.slice(0, 3);
+    }
+    return getDefaultScripts();
+  } catch (e) {
+    logger.error('[AIHotMaterial] AI脚本生成失败', { error: e.message });
+    return getDefaultScripts();
+  }
+}
+
+function getDefaultScripts() {
+  return [
+    {
+      type: 'high_convert', title: '控油清洁力',
+      hook: '姐妹们！这个控油效果绝了',
+      scenes: [
+        { time: '0-1s', description: '女生素颜面对镜头，T区出油特写', voiceover: '每天T区油到反光？' },
+        { time: '1-3s', description: '挤出绿泥洗面奶搓泡，泡沫细腻', voiceover: '雪玲妃绿泥洗面奶，氨基酸温和清洁' },
+        { time: '3-5s', description: '洗完后清爽面部特写，手比心', voiceover: '洗完不紧绷，控油一整天' },
+      ],
+      ccr_prompt: '竖屏9:16美妆广告。年轻中国女生在浴室，T区出油特写，挤出绿泥洗面奶搓出丰富泡沫，温和洗脸，露出清爽干净肌肤。柔和日光，随拍vlog风格。',
+      duration: 5, key_selling_points: ['氨基酸温和', '控油清洁'], cta: '点击购买同款'
+    },
+    {
+      type: 'ctr_boost', title: '黑头克星',
+      hook: '不是我说，黑头闭口真的太多了',
+      scenes: [
+        { time: '0-1s', description: '鼻翼黑头特写', voiceover: '你看看这鼻子上的黑头！' },
+        { time: '1-3s', description: '泡沫涂鼻翼打圈清洁', voiceover: '雪玲妃绿泥深层清洁毛孔' },
+        { time: '3-5s', description: '清洁后干净鼻翼对比', voiceover: '毛孔干净了，皮肤才能好' },
+      ],
+      ccr_prompt: '竖屏9:16极近距美妆。鼻翼黑头毛孔特写，绿泥泡沫打圈清洁，清洁前后毛孔对比。环形灯光，手机自拍风格。',
+      duration: 5, key_selling_points: ['深层清洁', '毛孔清洁'], cta: '戳链接抢购'
+    },
+    {
+      type: 'pain_point', title: '泡沫绵密感',
+      hook: '你看这泡沫，真的绵到哭了',
+      scenes: [
+        { time: '0-1s', description: '手心大量泡沫展示', voiceover: '你们看这泡沫，绵密到像奶油' },
+        { time: '1-3s', description: '泡沫涂脸轻柔按摩', voiceover: '上脸超温和，敏感肌也能用' },
+        { time: '3-5s', description: '产品正面展示', voiceover: '这价格真的便宜到离谱' },
+      ],
+      ccr_prompt: '竖屏9:16美妆vlog。手心大量绵密泡沫展示，轻柔涂脸按摩，产品瓶身正面展示。温暖浴室灯光，UGC真实感。',
+      duration: 5, key_selling_points: ['泡沫绵密', '温和不刺激'], cta: '赶紧囤起来'
+    },
+  ];
+}
+
+// ===================== 推送到千川 =====================
+async function pushToQianchuan(item) {
+  logger.info('[AIHotMaterial] 推送 #' + item.id);
+  await db.query("UPDATE ai_hot_materials SET pipeline_status = 'pushed', push_status = 'pushing' WHERE id = ?", [item.id]);
+
+  const [accounts] = await db.query("SELECT * FROM qc_accounts WHERE status = 'active'");
+  const pushedAccounts = [];
+  const materialIds = [];
+
+  for (const acc of accounts) {
+    try {
+      const api = new QianChuanAPI(acc.access_token);
+      const videoDir = VIDEO_DIR;
+      if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir, { recursive: true });
+      const localPath = path.join(videoDir, 'push_' + item.id + '_' + Date.now() + '.mp4');
+
+      // 判断是本地路径还是远程URL
+      if (item.video_url.startsWith('/generated-videos/')) {
+        const srcPath = '/home/www/qianchuan-monitor' + item.video_url;
+        fs.copyFileSync(srcPath, localPath);
+      } else {
+        const videoResp = await axios.get(item.video_url, { responseType: 'stream' });
+        const writer = fs.createWriteStream(localPath);
+        videoResp.data.pipe(writer);
+        await new Promise((resolve, reject) => { writer.on('finish', resolve); writer.on('error', reject); });
+      }
+
+      const result = await api.uploadVideo(acc.advertiser_id, localPath, 'AI_' + item.script_title + '_' + item.id);
+      if (result && result.video_id) {
+        materialIds.push(result.video_id);
+        pushedAccounts.push({ advertiser_id: acc.advertiser_id, name: acc.name, video_id: result.video_id });
+      }
+      fs.unlinkSync(localPath);
+    } catch (e) {
+      pushedAccounts.push({ advertiser_id: acc.advertiser_id, name: acc.name, error: e.message });
+    }
+  }
+
+  await db.query(
+    "UPDATE ai_hot_materials SET pushed_accounts = ?, qc_material_ids = ?, push_status = 'done', pipeline_status = 'tracking' WHERE id = ?",
+    [JSON.stringify(pushedAccounts), JSON.stringify(materialIds), item.id]
+  );
+}
+
+// ===================== 重试（分镜生成） =====================
+async function retryItem(item) {
+  try {
+    const scriptContent = typeof item.script_content === 'string' ? JSON.parse(item.script_content) : item.script_content;
+    await db.query("UPDATE ai_hot_materials SET pipeline_status = 'generating', error_msg = '' WHERE id = ?", [item.id]);
+    const dbId = item.id;
+
+    const scenes = scriptContent?.scenes || [];
+
+    // 有分镜则走分段生成
+    if (scenes.length > 1) {
+      const segmentUrls = [];
+      const segmentVoiceovers = [];
+
+      for (let si = 0; si < scenes.length; si++) {
+        const scene = scenes[si];
+        const scenePrompt = scene.ccr_prompt || scene.description || scriptContent.title;
+        const timeMatch = scene.time?.match(/(\d+)-(\d+)/);
+        const sceneDuration = timeMatch ? Math.min(Math.max(parseInt(timeMatch[2]) - parseInt(timeMatch[1]), 5), 10) : 10;
+
+        logger.info(`[AIHotMaterial] 重试分镜 #${dbId}-${si+1}/${scenes.length}`, { duration: sceneDuration });
+
+        try {
+          const taskId = await jimeng.submitText2Video(scenePrompt, { duration: Math.min(sceneDuration, 10) });
+          const videoUrl = await jimeng.waitForVideo(taskId);
+          segmentUrls.push(videoUrl);
+          if (scene.voiceover) segmentVoiceovers.push(scene.voiceover);
+          logger.info(`[AIHotMaterial] 重试分镜完成 #${dbId}-${si+1}`, { videoUrl: videoUrl?.substring(0, 50) });
+        } catch (segErr) {
+          logger.warn(`[AIHotMaterial] 重试分镜失败 #${dbId}-${si+1}`, { error: segErr.message });
+        }
+      }
+
+      if (segmentUrls.length === 0) throw new Error('所有分镜生成失败');
+
+      const tmpDir = '/tmp/hot_material_retry_' + dbId;
+      execSync(`mkdir -p ${tmpDir}`);
+
+      for (let si = 0; si < segmentUrls.length; si++) {
+        execSync(`curl -s -o ${tmpDir}/seg_${si}.mp4 "${segmentUrls[si]}"`, { timeout: 30000 });
+      }
+
+      const concatList = segmentUrls.map((_, si) => `file '${tmpDir}/seg_${si}.mp4'`).join('\n');
+      fs.writeFileSync(`${tmpDir}/concat.txt`, concatList);
+
+      const mergedFile = `${tmpDir}/merged.mp4`;
+      execSync(`ffmpeg -y -f concat -safe 0 -i ${tmpDir}/concat.txt -c copy ${mergedFile}`, { timeout: 60000 });
+
+      const voiceoverText = segmentVoiceovers.join('，');
+      let finalUrl;
+
+      if (voiceoverText) {
+        try {
+          const { MsEdgeTTS } = require('msedge-tts');
+          const tts = new MsEdgeTTS();
+          await tts.setMetadata('zh-CN-XiaoxiaoNeural', { rate: '+5%', pitch: '+0Hz' });
+          const ttsFile = `${tmpDir}/tts.mp3`;
+          const readable = tts.toStream(voiceoverText);
+          const writeStream = fs.createWriteStream(ttsFile);
+          await new Promise((resolve, reject) => { readable.pipe(writeStream); writeStream.on('finish', resolve); writeStream.on('error', reject); });
+
+          const finalFile = `${tmpDir}/final.mp4`;
+          execSync(`ffmpeg -y -i ${mergedFile} -i ${ttsFile} -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 -shortest ${finalFile}`, { timeout: 60000 });
+
+          const outputName = `hot_${dbId}_${Date.now()}.mp4`;
+          const outputDir = '/home/www/qianchuan-monitor/backend/public/videos';
+          execSync(`mkdir -p ${outputDir} && cp ${finalFile} ${outputDir}/${outputName}`);
+          finalUrl = `/videos/${outputName}`;
+        } catch (ttsErr) {
+          logger.warn(`[AIHotMaterial] 重试TTS失败，使用无声视频`, { error: ttsErr.message });
+          const outputName = `hot_${dbId}_${Date.now()}.mp4`;
+          const outputDir = '/home/www/qianchuan-monitor/backend/public/videos';
+          execSync(`mkdir -p ${outputDir} && cp ${mergedFile} ${outputDir}/${outputName}`);
+          finalUrl = `/videos/${outputName}`;
+        }
+      } else {
+        const outputName = `hot_${dbId}_${Date.now()}.mp4`;
+        const outputDir = '/home/www/qianchuan-monitor/backend/public/videos';
+        execSync(`mkdir -p ${outputDir} && cp ${mergedFile} ${outputDir}/${outputName}`);
+        finalUrl = `/videos/${outputName}`;
+      }
+
+      execSync(`rm -rf ${tmpDir}`);
+      await db.query('UPDATE ai_hot_materials SET jimeng_task_id = ? WHERE id = ?', ['multi_segment', dbId]);
+      await db.query("UPDATE ai_hot_materials SET video_url = ?, pipeline_status = 'ready' WHERE id = ?", [finalUrl, dbId]);
+      logger.info(`[AIHotMaterial] 重试完成 #${dbId}`, { segments: segmentUrls.length });
+    } else {
+      // 无分镜，单段生成
+      const prompt = scriptContent?.ccr_prompt || scriptContent?.title || 'beauty product video';
+      const taskId = await jimeng.submitText2Video(prompt, { duration: scriptContent?.duration || 5 });
+      await db.query('UPDATE ai_hot_materials SET jimeng_task_id = ? WHERE id = ?', [taskId, dbId]);
+      const videoUrl = await jimeng.waitForVideo(taskId);
+
+      const voiceText = scenes.map(s => s.voiceover || '').filter(Boolean).join('，') || scriptContent?.hook || '';
+      let finalUrl = videoUrl;
+      if (voiceText) {
+        try { finalUrl = await addTTSToVideo(videoUrl, voiceText, dbId); } catch(e) { /* 静默失败 */ }
+      }
+      await db.query("UPDATE ai_hot_materials SET video_url = ?, pipeline_status = 'ready' WHERE id = ?", [finalUrl, dbId]);
+    }
+  } catch (e) {
+    logger.error(`[AIHotMaterial] 重试失败 #${item.id}`, { error: e.message });
+    await db.query("UPDATE ai_hot_materials SET pipeline_status = 'failed', error_msg = ? WHERE id = ?", [e.message, item.id]);
+  }
+}
+
+// ===================== 启动恢复：自动重试卡住的任务 =====================
+setTimeout(async () => {
+  try {
+    const [stuck] = await db.query(
+      "SELECT * FROM ai_hot_materials WHERE pipeline_status = 'generating' AND updated_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE)"
+    );
+    if (stuck.length > 0) {
+      logger.info(`[AIHotMaterial] 发现 ${stuck.length} 个卡住的任务，自动重试`);
+      for (const item of stuck) {
+        logger.info(`[AIHotMaterial] 自动重试 #${item.id} "${item.script_title}"`);
+        retryItem(item).catch(e => logger.error('[AIHotMaterial] 自动重试失败', { id: item.id, error: e.message }));
+        // 串行执行，避免即梦API并发限制
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+  } catch (e) {
+    logger.error('[AIHotMaterial] 启动恢复检查失败', { error: e.message });
+  }
+}, 10000); // 启动10秒后检查
+
+// ===================== 同步投放数据 =====================
+async function syncTrackingData() {
+  const [items] = await db.query(
+    "SELECT id, qc_material_ids, pushed_accounts FROM ai_hot_materials WHERE pipeline_status IN ('tracking','pushed') AND qc_material_ids IS NOT NULL"
+  );
+  if (!items.length) return;
+
+  const [accounts] = await db.query("SELECT * FROM qc_accounts WHERE status = 'active'");
+  if (!accounts.length) return;
+
+  const today = dayjs().format('YYYY-MM-DD');
+  const weekAgo = dayjs().subtract(7, 'day').format('YYYY-MM-DD');
+
+  for (const item of items) {
+    const matIds = typeof item.qc_material_ids === 'string' ? JSON.parse(item.qc_material_ids) : item.qc_material_ids;
+    if (!matIds || !matIds.length) continue;
+
+    let totalCost = 0, totalOrders = 0, totalGmv = 0;
+    for (const acc of accounts) {
+      try {
+        const api = new QianChuanAPI(acc.access_token);
+        const report = await api.getVideoMaterialReport({ advertiserId: acc.advertiser_id, startDate: weekAgo, endDate: today });
+        if (report && report.list) {
+          for (const row of report.list) {
+            if (matIds.includes(row.video_id)) {
+              totalCost += parseFloat(row.stat_cost || 0);
+              totalOrders += parseInt(row.pay_order_count || 0);
+              totalGmv += parseFloat(row.pay_order_amount || 0);
+              await db.query(`
+                INSERT INTO ai_hot_material_daily_stats (material_db_id, qc_material_id, stat_date, cost, pay_order_count, pay_order_amount, ctr, convert_rate, roi, play_3s_rate)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE cost=VALUES(cost), pay_order_count=VALUES(pay_order_count), pay_order_amount=VALUES(pay_order_amount),
+                  ctr=VALUES(ctr), convert_rate=VALUES(convert_rate), roi=VALUES(roi), play_3s_rate=VALUES(play_3s_rate)
+              `, [item.id, row.video_id, today, row.stat_cost||0, row.pay_order_count||0, row.pay_order_amount||0,
+                  row.show_click_rate||0, row.convert_rate||0,
+                  row.stat_cost > 0 ? (row.pay_order_amount / row.stat_cost).toFixed(2) : 0,
+                  row.play_duration_3s_rate||0]);
+            }
+          }
+        }
+      } catch (e) {
+        logger.error('[AIHotMaterial] tracking error', { error: e.message });
+      }
+    }
+
+    const avgRoi = totalCost > 0 ? (totalGmv / totalCost).toFixed(2) : 0;
+    const isHot = totalCost >= 100000 ? 1 : 0;
+    await db.query('UPDATE ai_hot_materials SET total_cost=?, total_orders=?, total_gmv=?, avg_roi=?, is_hot=? WHERE id=?',
+      [totalCost, totalOrders, totalGmv, avgRoi, isHot, item.id]);
+    if (isHot) await db.query("UPDATE ai_hot_materials SET pipeline_status='completed' WHERE id=?", [item.id]);
+  }
+}
+
+module.exports = router;
+module.exports.runPipeline = runPipeline;
+// === AI创作接口：text2video, text2image, creations, task-status ===
+// 追加到 ai-hot-material.js 路由文件末尾
+
+// 文生视频
+router.post('/text2video', auth(), async (req, res) => {
+  const { prompt, duration = 5, ratio = '9:16', model = 'doubao' } = req.body;
+  if (!prompt) return res.json({ code: 400, msg: '请输入提示词' });
+
+  try {
+    let taskId, provider;
+
+    if (model === 'doubao') {
+      const doubao = require('../services/doubao-seedance');
+      taskId = await doubao.submitText2Video(prompt, { duration, ratio });
+      provider = 'doubao';
+    } else if (model === 'jimeng') {
+      taskId = await jimeng.submitText2Video(prompt, { duration, width: ratio === '16:9' ? 1280 : 720, height: ratio === '16:9' ? 720 : 1280 });
+      provider = 'jimeng';
+    } else if (model === 'kling') {
+      // TODO: 可灵接口
+      return res.json({ code: 400, msg: '可灵接口暂未接入' });
+    } else {
+      return res.json({ code: 400, msg: '不支持的模型' });
+    }
+
+    // 存入数据库
+    await db.query(
+      `INSERT INTO ai_creations (type, prompt, model, duration, ratio, task_id, provider, status) VALUES (?,?,?,?,?,?,?,?)`,
+      ['video', prompt, model, duration, ratio, taskId, provider, 'processing']
+    );
+    const [[row]] = await db.query('SELECT LAST_INSERT_ID() as id');
+
+    // 后台轮询任务状态
+    pollCreationTask(row.id, taskId, provider, model === 'jimeng' ? 'jimeng_t2v_v30_1080p' : null);
+
+    logger.info('[AI Create] text2video submitted', { taskId, model, id: row.id });
+    res.json({ code: 0, data: { taskId: row.id } });
+  } catch (e) {
+    logger.error('[AI Create] text2video error', { error: e.message });
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// 文生图片
+router.post('/text2image', auth(), async (req, res) => {
+  const { prompt, ratio = '9:16', model = 'doubao' } = req.body;
+  if (!prompt) return res.json({ code: 400, msg: '请输入提示词' });
+
+  try {
+    let taskId, provider;
+
+    if (model === 'jimeng') {
+      // 即梦图片生成
+      const resp = await jimeng.callAPI('CVSync2AsyncSubmitTask', {
+        req_key: 'high_aes_general_v21_L',
+        prompt,
+        width: ratio === '16:9' ? 1280 : ratio === '1:1' ? 1024 : 720,
+        height: ratio === '16:9' ? 720 : ratio === '1:1' ? 1024 : 1280,
+        seed: -1,
+        scale: 3.5,
+        ddim_steps: 25,
+        return_url: true,
+      });
+      taskId = resp.data?.task_id;
+      if (!taskId) throw new Error('No task_id: ' + JSON.stringify(resp));
+      provider = 'jimeng';
+    } else if (model === 'doubao') {
+      // 豆包图片生成 (通过火山方舟 API)
+      const apiKey = process.env.DOUBAO_ARK_API_KEY;
+      if (!apiKey) throw new Error('未配置 DOUBAO_ARK_API_KEY');
+      const r = await axios.post('https://ark.cn-beijing.volces.com/api/v3/images/generations', {
+        model: 'doubao-seedance-2-0-pro-260215',
+        prompt,
+        size: ratio === '16:9' ? '1280x720' : ratio === '1:1' ? '1024x1024' : '720x1280',
+        n: 1,
+      }, {
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        timeout: 60000,
+      });
+      // 同步返回图片URL
+      const imgUrl = r.data?.data?.[0]?.url || r.data?.data?.[0]?.b64_json;
+      if (imgUrl) {
+        await db.query(
+          `INSERT INTO ai_creations (type, prompt, model, ratio, status, result_url) VALUES (?,?,?,?,?,?)`,
+          ['image', prompt, model, ratio, 'done', imgUrl]
+        );
+        const [[row]] = await db.query('SELECT LAST_INSERT_ID() as id');
+        return res.json({ code: 0, data: { taskId: row.id } });
+      }
+      // 如果是异步任务
+      taskId = r.data?.id || r.data?.task_id;
+      if (!taskId) throw new Error('No result: ' + JSON.stringify(r.data).slice(0, 300));
+      provider = 'doubao';
+    } else {
+      return res.json({ code: 400, msg: '不支持的模型' });
+    }
+
+    await db.query(
+      `INSERT INTO ai_creations (type, prompt, model, ratio, task_id, provider, status) VALUES (?,?,?,?,?,?,?)`,
+      ['image', prompt, model, ratio, taskId, provider, 'processing']
+    );
+    const [[row]] = await db.query('SELECT LAST_INSERT_ID() as id');
+
+    pollCreationTask(row.id, taskId, provider, provider === 'jimeng' ? 'high_aes_general_v21_L' : null);
+
+    logger.info('[AI Create] text2image submitted', { taskId, model, id: row.id });
+    res.json({ code: 0, data: { taskId: row.id } });
+  } catch (e) {
+    logger.error('[AI Create] text2image error', { error: e.message });
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// 查询任务状态
+router.get('/task-status/:id', auth(), async (req, res) => {
+  try {
+    const [[row]] = await db.query('SELECT id, status, result_url FROM ai_creations WHERE id = ?', [req.params.id]);
+    if (!row) return res.json({ code: 404, msg: '任务不存在' });
+    res.json({ code: 0, data: row });
+  } catch (e) {
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// 创作记录列表
+router.get('/creations', auth(), async (req, res) => {
+  const { page = 1, pageSize = 50, type } = req.query;
+  try {
+    let where = '1=1';
+    const params = [];
+    if (type) { where += ' AND type = ?'; params.push(type); }
+    const [[{ total }]] = await db.query(`SELECT COUNT(*) as total FROM ai_creations WHERE ${where}`, params);
+    const [list] = await db.query(
+      `SELECT * FROM ai_creations WHERE ${where} ORDER BY id DESC LIMIT ? OFFSET ?`,
+      [...params, parseInt(pageSize), (parseInt(page) - 1) * parseInt(pageSize)]
+    );
+    res.json({ code: 0, data: { list, total } });
+  } catch (e) {
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// 后台轮询任务
+async function pollCreationTask(dbId, taskId, provider, reqKey) {
+  const maxAttempts = 60; // 5min max
+  let attempt = 0;
+  const poll = async () => {
+    attempt++;
+    if (attempt > maxAttempts) {
+      await db.query('UPDATE ai_creations SET status = ?, error_msg = ? WHERE id = ?', ['failed', 'timeout', dbId]);
+      return;
+    }
+    try {
+      let result;
+      if (provider === 'jimeng') {
+        result = await jimeng.queryTask(taskId, reqKey);
+      } else if (provider === 'doubao') {
+        const doubao = require('../services/doubao-seedance');
+        result = await doubao.queryTask(taskId);
+      }
+
+      if (result.status === 'done' && (result.videoUrl || result.imageUrl)) {
+        const url = result.videoUrl || result.imageUrl;
+        await db.query('UPDATE ai_creations SET status = ?, result_url = ? WHERE id = ?', ['done', url, dbId]);
+        logger.info('[AI Create] task done', { dbId, url: url.slice(0, 80) });
+        return;
+      }
+      if (result.status === 'failed') {
+        await db.query('UPDATE ai_creations SET status = ?, error_msg = ? WHERE id = ?', ['failed', JSON.stringify(result.raw).slice(0, 500), dbId]);
+        return;
+      }
+      setTimeout(poll, 5000);
+    } catch (e) {
+      logger.warn('[AI Create] poll error', { dbId, error: e.message });
+      setTimeout(poll, 5000);
+    }
+  };
+  setTimeout(poll, 3000);
+}
+
+// 建表
+(async () => {
+  try {
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS ai_creations (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        type ENUM('video','image') DEFAULT 'video',
+        prompt TEXT,
+        model VARCHAR(30) DEFAULT 'doubao',
+        duration INT DEFAULT 5,
+        ratio VARCHAR(10) DEFAULT '9:16',
+        task_id VARCHAR(200) DEFAULT '',
+        provider VARCHAR(30) DEFAULT '',
+        status ENUM('pending','processing','done','failed') DEFAULT 'pending',
+        result_url VARCHAR(1000) DEFAULT '',
+        error_msg TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_status (status),
+        INDEX idx_type (type)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+  } catch (e) { /* table exists */ }
+})();
+
+module.exports.syncTrackingData = syncTrackingData;

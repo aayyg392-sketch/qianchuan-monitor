@@ -3,9 +3,8 @@
     <div class="page-header">
       <h2 class="page-title">话术抓取</h2>
       <div class="page-header__actions">
-        <a-select v-model:value="selectedRoom" style="width: 180px" placeholder="选择直播间">
-          <a-select-option v-for="room in rooms" :key="room.id" :value="room.id">{{ room.nickname }}</a-select-option>
-        </a-select>
+        <a-select v-model:value="selectedRoom" style="width: 260px" placeholder="选择直播间" showSearch optionFilterProp="label"
+          :options="rooms.map(r => ({ value: r.id, label: r.nickname + (r.advertiser_name ? ' (' + r.advertiser_name.replace(/.*-/, '') + ')' : '') }))" />
         <a-button type="primary" @click="exportScripts" :loading="exporting">
           导出话术
         </a-button>
@@ -28,16 +27,16 @@
             <div class="speech-segment__header">
               <span class="speech-segment__time">{{ segment.time }}</span>
               <a-tag v-if="segment.is_high_convert" color="gold" size="small">高转化</a-tag>
-              <a-tag :color="categoryTagColor(segment.category)" size="small">{{ segment.category }}</a-tag>
+              <a-tag :color="categoryTagColor(segment.category)" size="small">{{ categoryLabel(segment.category) }}</a-tag>
             </div>
             <div class="speech-segment__text">{{ segment.text }}</div>
-            <div class="speech-segment__metrics" v-if="segment.metrics">
-              <span class="metric-tag">转化率 {{ segment.metrics.cvr }}</span>
-              <span class="metric-tag">GMV {{ segment.metrics.gmv }}</span>
-              <span class="metric-tag">订单 {{ segment.metrics.orders }}</span>
+            <div class="speech-segment__metrics" v-if="segment.orders > 0 || segment.gmv > 0 || segment.cvr > 0">
+              <span class="metric-tag" v-if="segment.cvr > 0">转化率 {{ segment.cvr }}%</span>
+              <span class="metric-tag" v-if="segment.gmv > 0">GMV ¥{{ segment.gmv >= 10000 ? (segment.gmv/10000).toFixed(1)+'万' : segment.gmv.toFixed(0) }}</span>
+              <span class="metric-tag" v-if="segment.orders > 0">成交 {{ segment.orders }}单</span>
             </div>
           </div>
-          <a-empty v-if="!realtimeScripts.length" description="暂无话术数据" />
+          <a-empty v-if="!realtimeScripts.length" description="暂无话术数据，开播后自动抓取" />
         </div>
       </a-tab-pane>
 
@@ -50,15 +49,12 @@
         <div class="script-library">
           <div v-for="script in filteredScripts" :key="script.id" class="script-card">
             <div class="script-card__header">
-              <a-tag :color="categoryTagColor(script.category)" size="small">{{ script.category }}</a-tag>
-              <div class="script-card__stats">
-                <span class="stat-mini">转化率 <b>{{ script.cvr }}</b></span>
-                <span class="stat-mini">使用 <b>{{ script.use_count }}次</b></span>
-              </div>
+              <a-tag :color="categoryTagColor(script.category)" size="small">{{ categoryLabel(script.category) }}</a-tag>
+              <a-tag v-if="script.is_high_convert" color="gold" size="small">🔥 高转化时段</a-tag>
             </div>
             <div class="script-card__text">{{ script.text }}</div>
             <div class="script-card__footer">
-              <span class="script-card__source">{{ script.source }} · {{ script.date }}</span>
+              <span class="script-card__source">{{ script.time }}</span>
               <div class="script-card__actions">
                 <a-button type="link" size="small" @click="copyScript(script.text)">复制</a-button>
                 <a-button type="link" size="small" @click="favoriteScript(script)">收藏</a-button>
@@ -70,15 +66,24 @@
 
       <!-- Tab: 话术词云 -->
       <a-tab-pane key="wordcloud" tab="话术词云">
-        <a-card :bordered="false">
-          <div ref="wordcloudChartRef" class="chart-box"></div>
+        <a-card title="主播高频用词" :bordered="false">
+          <a-empty v-if="!topKeywords.length" description="暂无话术数据，无法生成词云" />
+          <div v-else class="tagcloud-box">
+            <span v-for="(kw, idx) in topKeywords" :key="idx" class="tagcloud-word"
+              :style="{ fontSize: Math.max(14, Math.min(42, 14 + kw.pct * 0.3)) + 'px',
+                color: ['#1677FF','#722ED1','#13C2C2','#FF4D4F','#FF8A00','#52c41a','#2F54EB','#EB2F96','#FAAD14','#36CFC9'][idx % 10],
+                fontWeight: idx < 3 ? '700' : '500',
+                opacity: Math.max(0.6, 1 - idx * 0.03) }">
+              {{ kw.text || kw.word }}
+            </span>
+          </div>
         </a-card>
-        <a-card title="高频关键词" :bordered="false" style="margin-top: 12px">
+        <a-card title="高频关键词排行" :bordered="false" style="margin-top: 12px">
           <div class="keyword-grid">
             <div v-for="(kw, idx) in topKeywords" :key="idx" class="keyword-item">
               <span class="keyword-item__rank" :class="{ 'top3': idx < 3 }">{{ idx + 1 }}</span>
-              <span class="keyword-item__word">{{ kw.word }}</span>
-              <a-progress :percent="kw.pct" size="small" :show-info="false" style="flex: 1" />
+              <span class="keyword-item__word">{{ kw.text || kw.word }}</span>
+              <a-progress :percent="kw.pct" size="small" :show-info="false" style="flex: 1" :stroke-color="idx < 3 ? '#FF4D4F' : '#1677FF'" />
               <span class="keyword-item__count">{{ kw.count }}次</span>
             </div>
           </div>
@@ -121,67 +126,89 @@ import * as echarts from 'echarts'
 
 const selectedRoom = ref(1)
 const activeTab = ref('realtime')
-const isRecording = ref(true)
-const recordDuration = ref('01:23:45')
+const isRecording = ref(false)
+const recordDuration = ref('--:--:--')
 const exporting = ref(false)
 const scriptCategory = ref('全部')
 const searchKeyword = ref('')
-const rooms = ref([
-  { id: 1, nickname: '好物推荐官' },
-  { id: 2, nickname: '美妆达人小美' },
-])
+const rooms = ref([])
 
-const realtimeScripts = ref([
-  { time: '14:32:05', category: '逼单促单', text: '家人们，这个价格真的只有今天！库存只剩最后200单了，拍到就是赚到，犹豫就没了！', is_high_convert: true, metrics: { cvr: '8.5%', gmv: '¥12,800', orders: 160 } },
-  { time: '14:28:30', category: '卖点讲解', text: '这款精华液用的是专利成分，渗透力是普通产品的3倍，上脸就能感觉到水润感，不是那种假滑的感觉。', is_high_convert: true, metrics: { cvr: '6.2%', gmv: '¥8,500', orders: 106 } },
-  { time: '14:25:10', category: '福利发放', text: '来，给直播间的家人们上一波福利！前50名下单的送一支价值89块的面膜，快去拍！', is_high_convert: false, metrics: null },
-  { time: '14:22:00', category: '互动留人', text: '新来的家人们点个关注不迷路，今天直播间还有更多优惠，千万不要走开！', is_high_convert: false, metrics: null },
-  { time: '14:18:45', category: '产品介绍', text: '我手上这款是我们家的明星产品，月销10万+，好评率99.2%，你去看看评价区，全是回购的老客户。', is_high_convert: true, metrics: { cvr: '5.8%', gmv: '¥6,200', orders: 78 } },
-  { time: '14:15:20', category: '逼单促单', text: '3、2、1上链接！大家快去拍，这波优惠力度全年最大的！', is_high_convert: true, metrics: { cvr: '12.3%', gmv: '¥18,900', orders: 236 } },
-])
+const loadRooms = async () => {
+  try {
+    const res = await request.get('/live/rooms')
+    if (res?.data?.length) {
+      rooms.value = res.data.map(r => ({ id: r.id, nickname: r.nickname }))
+      if (!rooms.value.find(r => r.id === selectedRoom.value) && rooms.value.length) {
+        selectedRoom.value = rooms.value[0].id
+      }
+    }
+  } catch (e) { console.warn('loadRooms failed', e) }
+}
 
-const scriptLibrary = ref([
-  { id: 1, category: '逼单促单', text: '家人们抓紧时间，这个价格今天过后恢复原价，库存不等人！3、2、1上链接！', cvr: '12.3%', use_count: 58, source: '好物推荐官', date: '03-27' },
-  { id: 2, category: '卖点讲解', text: '这款产品用的是医美级成分，和大牌同源工厂，但价格只有大牌的1/5，性价比超高！', cvr: '8.5%', use_count: 42, source: '美妆达人', date: '03-27' },
-  { id: 3, category: '福利发放', text: '感谢家人们的支持！现在直播间专属福利，买一送一，只限100单！', cvr: '9.1%', use_count: 35, source: '好物推荐官', date: '03-26' },
-  { id: 4, category: '互动留人', text: '新来的朋友们扣个1，让我看看有多少人想要今天的福利！', cvr: '3.2%', use_count: 80, source: '好物推荐官', date: '03-26' },
-  { id: 5, category: '产品介绍', text: '看我手上这个质地，水润不油腻，吸收特别快，干皮油皮都能用！', cvr: '6.8%', use_count: 28, source: '美妆达人', date: '03-25' },
-])
+const realtimeScripts = ref([])
+const scriptLibrary = ref([])
+const topKeywords = ref([])
+const hotTopics = ref([])
+const userQuestions = ref([])
+const danmakuSentiment = ref([])
 
 const filteredScripts = computed(() => {
   let list = scriptLibrary.value
-  if (scriptCategory.value !== '全部') list = list.filter(s => s.category === scriptCategory.value)
+  if (scriptCategory.value !== '全部') {
+    const filterKey = categoryReverseMap[scriptCategory.value] || scriptCategory.value
+    list = list.filter(s => s.category === filterKey || s.category === scriptCategory.value)
+  }
   if (searchKeyword.value) list = list.filter(s => s.text.includes(searchKeyword.value))
   return list
 })
 
-const topKeywords = ref([
-  { word: '优惠', count: 256, pct: 100 },
-  { word: '质量好', count: 198, pct: 77 },
-  { word: '性价比', count: 167, pct: 65 },
-  { word: '回购', count: 145, pct: 57 },
-  { word: '好用', count: 132, pct: 52 },
-  { word: '推荐', count: 120, pct: 47 },
-  { word: '包装精美', count: 98, pct: 38 },
-  { word: '发货快', count: 87, pct: 34 },
-])
+const loadSpeechData = async () => {
+  try {
+    const res = await request.get(`/live/rooms/${selectedRoom.value}/speech`)
+    if (res && res.data) {
+      const data = res.data
+      realtimeScripts.value = data.realtime || []
+      scriptLibrary.value = data.library || []
+      isRecording.value = !!data.is_recording
+      recordDuration.value = data.record_duration || '--:--:--'
+      // Extract keywords from speech data if provided
+      if (data.keywords && data.keywords.length) {
+        const maxCount = data.keywords[0].count || 1
+        topKeywords.value = data.keywords.map(k => ({
+          ...k,
+          pct: Math.round((k.count / maxCount) * 100)
+        }))
+      } else {
+        topKeywords.value = []
+      }
+    }
+  } catch (e) {
+    realtimeScripts.value = []
+    scriptLibrary.value = []
+    topKeywords.value = []
+  }
+}
 
-const hotTopics = ref([
-  { text: '产品成分/功效', count: 156 },
-  { text: '价格优惠力度', count: 134 },
-  { text: '使用方法', count: 98 },
-  { text: '适合肤质', count: 76 },
-  { text: '发货时间', count: 65 },
-])
-const userQuestions = ref([
-  { text: '敏感肌可以用吗？', count: 45 },
-  { text: '保质期多久？', count: 38 },
-  { text: '能和其他产品叠加使用吗？', count: 32 },
-  { text: '有没有色差？', count: 28 },
-  { text: '退换货方便吗？', count: 22 },
-])
+const loadDanmakuData = async () => {
+  try {
+    const res = await request.get(`/live/rooms/${selectedRoom.value}/danmaku`)
+    if (res && res.data) {
+      const data = res.data
+      hotTopics.value = data.hot_topics || []
+      userQuestions.value = data.questions || []
+      danmakuSentiment.value = data.sentiment || []
+    }
+  } catch (e) {
+    hotTopics.value = []
+    userQuestions.value = []
+    danmakuSentiment.value = []
+  }
+}
 
-const categoryTagColor = (c) => ({ '卖点讲解': 'blue', '逼单促单': 'red', '福利发放': 'gold', '互动留人': 'green', '产品介绍': 'purple' }[c] || 'default')
+const categoryLabelMap = { selling_point: '卖点讲解', push_sale: '逼单促单', welfare: '福利发放', interact: '互动留人', product_intro: '产品介绍', other: '其他' }
+const categoryLabel = (c) => categoryLabelMap[c] || c
+const categoryTagColor = (c) => ({ selling_point: 'blue', push_sale: 'red', welfare: 'gold', interact: 'green', product_intro: 'purple', '卖点讲解': 'blue', '逼单促单': 'red', '福利发放': 'gold', '互动留人': 'green', '产品介绍': 'purple' }[c] || 'default')
+const categoryReverseMap = { '卖点讲解': 'selling_point', '逼单促单': 'push_sale', '福利发放': 'welfare', '互动留人': 'interact', '产品介绍': 'product_intro' }
 const stopRecording = () => { isRecording.value = false; message.info('已停止录制') }
 const copyScript = (text) => { navigator.clipboard?.writeText(text); message.success('已复制') }
 const favoriteScript = () => { message.success('已收藏') }
@@ -197,10 +224,9 @@ let charts = {}
 
 watch(activeTab, async (v) => {
   await nextTick()
-  if (v === 'wordcloud' && wordcloudChartRef.value) {
+  if (v === 'wordcloud' && wordcloudChartRef.value && topKeywords.value.length) {
     charts.wordcloud?.dispose()
     charts.wordcloud = echarts.init(wordcloudChartRef.value)
-    // Simulated word cloud using scatter
     const words = topKeywords.value
     charts.wordcloud.setOption({
       tooltip: {},
@@ -214,25 +240,27 @@ watch(activeTab, async (v) => {
       }]
     })
   }
-  if (v === 'danmaku' && sentimentChartRef.value) {
-    charts.sentiment?.dispose()
-    charts.sentiment = echarts.init(sentimentChartRef.value)
-    charts.sentiment.setOption({
-      tooltip: { trigger: 'item' },
-      legend: { bottom: 0 },
-      series: [{
-        type: 'pie', radius: ['35%', '65%'], center: ['50%', '45%'],
-        data: [
-          { value: 62, name: '正面', itemStyle: { color: '#00B96B' } },
-          { value: 28, name: '中性', itemStyle: { color: '#1677FF' } },
-          { value: 10, name: '负面', itemStyle: { color: '#FF4D4F' } },
-        ]
-      }]
-    })
+  if (v === 'danmaku') {
+    await loadDanmakuData()
+    await nextTick()
+    if (sentimentChartRef.value && danmakuSentiment.value.length) {
+      charts.sentiment?.dispose()
+      charts.sentiment = echarts.init(sentimentChartRef.value)
+      charts.sentiment.setOption({
+        tooltip: { trigger: 'item' },
+        legend: { bottom: 0 },
+        series: [{
+          type: 'pie', radius: ['35%', '65%'], center: ['50%', '45%'],
+          data: danmakuSentiment.value
+        }]
+      })
+    }
   }
 })
 
-onMounted(() => {})
+watch(selectedRoom, () => { loadSpeechData() })
+
+onMounted(() => { loadRooms(); loadSpeechData() })
 onUnmounted(() => { Object.values(charts).forEach(c => c?.dispose()) })
 </script>
 
@@ -270,6 +298,11 @@ onUnmounted(() => { Object.values(charts).forEach(c => c?.dispose()) })
 
 .chart-box { height: 300px; }
 .chart-box-sm { height: 240px; }
+
+/* 词云标签 */
+.tagcloud-box { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: center; justify-content: center; padding: 20px 10px; min-height: 120px; }
+.tagcloud-word { display: inline-block; cursor: default; transition: transform 0.2s; line-height: 1.4; }
+.tagcloud-word:hover { transform: scale(1.15); }
 
 .keyword-grid { display: flex; flex-direction: column; gap: 8px; }
 .keyword-item { display: flex; align-items: center; gap: 8px; }

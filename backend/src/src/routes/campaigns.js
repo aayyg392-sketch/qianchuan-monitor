@@ -1,0 +1,439 @@
+const router = require('express').Router();
+const db = require('../db');
+const auth = require('../middleware/auth');
+const dayjs = require('dayjs');
+const logger = require('../logger');
+const axios = require('axios');
+
+// 自动建表
+(async () => {
+  try {
+    await db.query(`CREATE TABLE IF NOT EXISTS qc_report_push_configs (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      advertiser_id VARCHAR(30) NOT NULL,
+      webhook_url TEXT NOT NULL,
+      template_type VARCHAR(30) DEFAULT 'account_daily',
+      push_fields JSON,
+      enabled TINYINT DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uk_adv (advertiser_id)
+    )`);
+    logger.info('[ReportPush] 表结构就绪');
+  } catch (e) { logger.error('[ReportPush] 建表失败', { error: e.message }); }
+})();
+
+// 数据概览统计（带环比+7天趋势）
+router.get('/overview', auth(), async (req, res) => {
+  const today = dayjs().format('YYYY-MM-DD');
+  const yesterday = dayjs().subtract(1, 'day').format('YYYY-MM-DD');
+  const weekStart = dayjs().subtract(6, 'day').format('YYYY-MM-DD');
+
+  try {
+    // 今日计划汇总
+    const [[todayData]] = await db.query(
+      `SELECT SUM(cost) AS cost, SUM(convert_cnt) AS orders, SUM(cpm) AS gmv,
+        AVG(NULLIF(convert_cost,0)) AS convert_cost, COUNT(*) AS plan_count
+       FROM qc_daily_stats WHERE stat_date=? AND entity_type='campaign'`, [today]
+    );
+    // 昨日同时段快照（取<=当前小时的最大快照）
+    const currentHour = new Date().getHours();
+    const [[yesterdaySnap]] = await db.query(
+      `SELECT cost, gmv, convert_cnt AS orders, show_cnt AS shows, click_cnt AS clicks
+       FROM qc_stats_snapshots WHERE stat_date=? AND snap_hour<=? ORDER BY snap_hour DESC LIMIT 1`,
+      [yesterday, currentHour]
+    );
+    const yesterdayData = {
+      cost: yesterdaySnap ? yesterdaySnap.cost : 0,
+      orders: yesterdaySnap ? yesterdaySnap.orders : 0,
+      gmv: yesterdaySnap ? yesterdaySnap.gmv : 0,
+      convert_cost: (yesterdaySnap && yesterdaySnap.orders > 0) ? yesterdaySnap.cost / yesterdaySnap.orders : 0,
+      plan_count: 0
+    };
+    // 素材展示/点击（从material_stats获取）
+    const [[todayMat]] = await db.query(
+      `SELECT SUM(product_show_count) AS shows, SUM(product_click_count) AS clicks
+       FROM qc_material_stats WHERE stat_date=?`, [today]
+    );
+    // 昨日同时段素材数据（从快照表获取）
+    const yesterdayMat = {
+      shows: yesterdaySnap ? parseInt(yesterdaySnap.shows) : 0,
+      clicks: yesterdaySnap ? parseInt(yesterdaySnap.clicks) : 0
+    };
+    // 7天趋势
+    const [trendRows] = await db.query(
+      `SELECT DATE_FORMAT(stat_date,'%m-%d') AS d,
+        SUM(cost) AS cost, SUM(convert_cnt) AS orders, SUM(cpm) AS gmv
+       FROM qc_daily_stats WHERE stat_date BETWEEN ? AND ? AND entity_type='campaign'
+       GROUP BY stat_date ORDER BY stat_date`, [weekStart, today]
+    );
+
+    const t = {
+      cost: parseFloat(todayData.cost) || 0,
+      orders: parseInt(todayData.orders) || 0,
+      gmv: parseFloat(todayData.gmv) || 0,
+      convert_cost: parseFloat(todayData.convert_cost) || 0,
+      plan_count: parseInt(todayData.plan_count) || 0,
+      shows: parseInt(todayMat.shows) || 0,
+      clicks: parseInt(todayMat.clicks) || 0,
+    };
+    const y = {
+      cost: parseFloat(yesterdayData.cost) || 0,
+      orders: parseInt(yesterdayData.orders) || 0,
+      gmv: parseFloat(yesterdayData.gmv) || 0,
+      convert_cost: parseFloat(yesterdayData.convert_cost) || 0,
+      plan_count: parseInt(yesterdayData.plan_count) || 0,
+      shows: parseInt(yesterdayMat.shows) || 0,
+      clicks: parseInt(yesterdayMat.clicks) || 0,
+    };
+
+    const pct = (cur, prev) => prev > 0 ? ((cur - prev) / prev * 100) : (cur > 0 ? 100 : 0);
+    const roi = t.cost > 0 ? t.gmv / t.cost : 0;
+    const yRoi = y.cost > 0 ? y.gmv / y.cost : 0;
+    const avgPrice = t.orders > 0 ? t.gmv / t.orders : 0;
+    const yAvgPrice = y.orders > 0 ? y.gmv / y.orders : 0;
+    const ctr = t.shows > 0 ? t.clicks / t.shows * 100 : 0;
+    const yCtr = y.shows > 0 ? y.clicks / y.shows * 100 : 0;
+    const ordPer1k = t.cost > 0 ? t.orders * 1000 / t.cost : 0;
+    const yOrdPer1k = y.cost > 0 ? y.orders * 1000 / y.cost : 0;
+
+    const cards = [
+      { key: 'cost',       label: '整体消耗',      value: t.cost,          change: pct(t.cost, y.cost),          prefix: '¥', trend: trendRows.map(r => parseFloat(r.cost)||0) },
+      { key: 'roi',        label: '整体支付ROI',    value: roi,             change: pct(roi, yRoi),               prefix: '',  trend: trendRows.map(r => { const c = parseFloat(r.cost)||1; return (parseFloat(r.gmv)||0)/c; }) },
+      { key: 'gmv',        label: '整体成交金额',   value: t.gmv,           change: pct(t.gmv, y.gmv),            prefix: '¥', trend: trendRows.map(r => parseFloat(r.gmv)||0) },
+      { key: 'orders',     label: '整体成交订单数',  value: t.orders,        change: pct(t.orders, y.orders),      prefix: '',  trend: trendRows.map(r => parseInt(r.orders)||0) },
+
+      { key: 'shows',      label: '商品展示量',     value: t.shows,         change: pct(t.shows, y.shows),        prefix: '',  trend: [] },
+      { key: 'clicks',     label: '商品点击量',     value: t.clicks,        change: pct(t.clicks, y.clicks),      prefix: '',  trend: [] },
+      { key: 'ctr',        label: '商品点击率',     value: ctr,             change: pct(ctr, yCtr),               prefix: '',  suffix: '%', trend: [] },
+      { key: 'cvr_cost',   label: '转化成本',      value: t.convert_cost,  change: pct(t.convert_cost, y.convert_cost), prefix: '¥', trend: [] },
+    ];
+
+    res.json({ code: 0, data: { cards, date: today } });
+  } catch (e) {
+    logger.error('[Campaigns] overview失败', { error: e.message });
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// 账户聚合列表
+router.get('/accounts-list', auth(), async (req, res) => {
+  const targetDate = req.query.date || dayjs().format('YYYY-MM-DD');
+  const yesterdayDate = dayjs(targetDate).subtract(1, 'day').format('YYYY-MM-DD');
+  try {
+    // 计算昨日同时段比例系数
+    const currentHour = new Date().getHours();
+    const [[yestSnap]] = await db.query(
+      `SELECT cost, gmv, convert_cnt, show_cnt, click_cnt
+       FROM qc_stats_snapshots WHERE stat_date=? AND snap_hour<=? ORDER BY snap_hour DESC LIMIT 1`,
+      [yesterdayDate, currentHour]
+    );
+    const [[yestFull]] = await db.query(
+      `SELECT cost, gmv, convert_cnt, show_cnt, click_cnt
+       FROM qc_stats_snapshots WHERE stat_date=? ORDER BY snap_hour DESC LIMIT 1`,
+      [yesterdayDate]
+    );
+    // 比例 = 同时段 / 全天（各指标独立计算）
+    const safeDiv = (a, b) => b > 0 ? a / b : 0;
+    const ratio = {
+      cost: yestSnap && yestFull ? safeDiv(parseFloat(yestSnap.cost), parseFloat(yestFull.cost)) : 1,
+      gmv: yestSnap && yestFull ? safeDiv(parseFloat(yestSnap.gmv), parseFloat(yestFull.gmv)) : 1,
+      orders: yestSnap && yestFull ? safeDiv(parseInt(yestSnap.convert_cnt), parseInt(yestFull.convert_cnt)) : 1,
+      show: yestSnap && yestFull ? safeDiv(parseInt(yestSnap.show_cnt), parseInt(yestFull.show_cnt)) : 1,
+      click: yestSnap && yestFull ? safeDiv(parseInt(yestSnap.click_cnt), parseInt(yestFull.click_cnt)) : 1,
+    };
+    const [rows] = await db.query(
+      `SELECT a.advertiser_id, a.advertiser_name, a.status,
+        COALESCE(s.cost,0) AS cost,
+        COALESCE(s.cpm,0) AS gmv,
+        COALESCE(s.gmv_no_coupon,0) AS gmv_no_coupon,
+        COALESCE(s.convert_cnt,0) AS orders,
+        COALESCE(s.convert_cost,0) AS convert_cost,
+        COALESCE(s.convert_rate,0) AS api_roi,
+        (SELECT COUNT(*) FROM qc_daily_stats d
+         WHERE d.advertiser_id=a.advertiser_id AND d.stat_date=? AND d.entity_type='campaign') AS plan_count,
+        (SELECT COALESCE(SUM(product_show_count),0) FROM qc_material_stats WHERE advertiser_id=a.advertiser_id AND stat_date=?) AS show_cnt,
+        (SELECT COALESCE(SUM(product_click_count),0) FROM qc_material_stats WHERE advertiser_id=a.advertiser_id AND stat_date=?) AS click_cnt,
+        COALESCE(y.cost,0) AS yest_cost,
+        COALESCE(y.cpm,0) AS yest_gmv,
+        COALESCE(y.gmv_no_coupon,0) AS yest_gmv_no_coupon,
+        COALESCE(y.convert_cnt,0) AS yest_orders,
+        (SELECT COALESCE(SUM(product_show_count),0) FROM qc_material_stats WHERE advertiser_id=a.advertiser_id AND stat_date=?) AS yest_show_cnt,
+        (SELECT COALESCE(SUM(product_click_count),0) FROM qc_material_stats WHERE advertiser_id=a.advertiser_id AND stat_date=?) AS yest_click_cnt
+       FROM qc_accounts a
+       LEFT JOIN qc_daily_stats s ON a.advertiser_id=s.entity_id
+         AND s.stat_date=? AND s.entity_type='account'
+       LEFT JOIN qc_daily_stats y ON a.advertiser_id=y.entity_id
+         AND y.stat_date=? AND y.entity_type='account'
+       WHERE a.status=1
+       ORDER BY COALESCE(s.cost,0) DESC`,
+      [targetDate, targetDate, targetDate, yesterdayDate, yesterdayDate, targetDate, yesterdayDate]
+    );
+
+    // 汇总
+    const summary = {
+      cost: rows.reduce((sum, r) => sum + parseFloat(r.cost || 0), 0),
+      gmv: rows.reduce((sum, r) => sum + parseFloat(r.gmv || 0), 0),
+      gmv_no_coupon: rows.reduce((sum, r) => sum + parseFloat(r.gmv_no_coupon || 0), 0),
+      orders: rows.reduce((sum, r) => sum + parseInt(r.orders || 0), 0),
+      plan_count: rows.reduce((sum, r) => sum + parseInt(r.plan_count || 0), 0),
+      show_cnt: rows.reduce((sum, r) => sum + parseInt(r.show_cnt || 0), 0),
+      click_cnt: rows.reduce((sum, r) => sum + parseInt(r.click_cnt || 0), 0),
+      yest_cost: rows.reduce((sum, r) => sum + parseFloat(r.yest_cost || 0), 0),
+      yest_gmv: rows.reduce((sum, r) => sum + parseFloat(r.yest_gmv || 0), 0),
+      yest_gmv_no_coupon: rows.reduce((sum, r) => sum + parseFloat(r.yest_gmv_no_coupon || 0), 0),
+      yest_orders: rows.reduce((sum, r) => sum + parseInt(r.yest_orders || 0), 0),
+      yest_show_cnt: rows.reduce((sum, r) => sum + parseInt(r.yest_show_cnt || 0), 0),
+      yest_click_cnt: rows.reduce((sum, r) => sum + parseInt(r.yest_click_cnt || 0), 0),
+    };
+
+    // 用同时段比例换算昨日数据
+    for (const row of rows) {
+      row.yest_cost = parseFloat(row.yest_cost || 0) * ratio.cost;
+      row.yest_gmv = parseFloat(row.yest_gmv || 0) * ratio.gmv;
+      row.yest_gmv_no_coupon = parseFloat(row.yest_gmv_no_coupon || 0) * ratio.gmv;
+      row.yest_orders = Math.round(parseInt(row.yest_orders || 0) * ratio.orders);
+      row.yest_show_cnt = Math.round(parseInt(row.yest_show_cnt || 0) * ratio.show);
+      row.yest_click_cnt = Math.round(parseInt(row.yest_click_cnt || 0) * ratio.click);
+    }
+    // 重算summary的昨日数据
+    summary.yest_cost = rows.reduce((s, r) => s + parseFloat(r.yest_cost || 0), 0);
+    summary.yest_gmv = rows.reduce((s, r) => s + parseFloat(r.yest_gmv || 0), 0);
+    summary.yest_gmv_no_coupon = rows.reduce((s, r) => s + parseFloat(r.yest_gmv_no_coupon || 0), 0);
+    summary.yest_orders = rows.reduce((s, r) => s + parseInt(r.yest_orders || 0), 0);
+    summary.yest_show_cnt = rows.reduce((s, r) => s + parseInt(r.yest_show_cnt || 0), 0);
+    summary.yest_click_cnt = rows.reduce((s, r) => s + parseInt(r.yest_click_cnt || 0), 0);
+
+    res.json({ code: 0, data: { list: rows, summary, total: rows.length } });
+  } catch (e) {
+    logger.error('[Campaigns] 账户列表查询失败', { error: e.message });
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// 计划列表（支持搜索、筛选、分页、排序）
+router.get('/', auth(), async (req, res) => {
+  const { date, keyword, account_type, advertiser_id, sort_by = 'cost_desc', page = 1, page_size = 50 } = req.query;
+  const targetDate = date || dayjs().format('YYYY-MM-DD');
+  const offset = (parseInt(page) - 1) * parseInt(page_size);
+
+  const sortMap = {
+    cost_desc: 's.cost DESC', cost_asc: 's.cost ASC',
+    gmv_desc: 's.cpm DESC', orders_desc: 's.convert_cnt DESC',
+    roi_desc: '(CASE WHEN s.cost>0 THEN s.cpm/s.cost ELSE 0 END) DESC',
+    ctr_desc: 's.ctr DESC',
+  };
+  const orderClause = sortMap[sort_by] || 's.cost DESC';
+
+  try {
+    let where = "s.stat_date=? AND s.entity_type='campaign'";
+    const params = [targetDate];
+
+    if (keyword) {
+      where += ' AND (s.entity_name LIKE ? OR s.entity_id LIKE ?)';
+      params.push(`%${keyword}%`, `%${keyword}%`);
+    }
+    if (account_type) {
+      where += ' AND a.account_type=?';
+      params.push(account_type);
+    }
+    if (advertiser_id) {
+      where += ' AND s.advertiser_id=?';
+      params.push(advertiser_id);
+    }
+
+    // 汇总
+    const [[summary]] = await db.query(
+      `SELECT COUNT(*) AS total, SUM(s.cost) AS cost, SUM(s.convert_cnt) AS orders,
+        SUM(s.cpm) AS gmv, SUM(s.show_cnt) AS shows, SUM(s.click_cnt) AS clicks
+       FROM qc_daily_stats s LEFT JOIN qc_accounts a ON s.advertiser_id=a.advertiser_id
+       WHERE ${where}`, params
+    );
+
+    // 列表
+    const [rows] = await db.query(
+      `SELECT s.entity_id AS campaign_id, s.entity_name AS campaign_name,
+        s.advertiser_id, a.advertiser_name AS account_name, a.account_type,
+        s.cost AS stat_cost, s.convert_cnt AS orders, s.cpm AS gmv,
+        CASE WHEN s.cost>0 THEN s.cpm/s.cost ELSE 0 END AS roi,
+        s.convert_cost AS cpo, s.show_cnt, s.click_cnt, s.ctr,
+        c.budget, c.budget_mode, c.status AS campaign_status
+       FROM qc_daily_stats s
+       LEFT JOIN qc_accounts a ON s.advertiser_id=a.advertiser_id
+       LEFT JOIN qc_campaigns c ON s.entity_id=c.campaign_id
+       WHERE ${where}
+       ORDER BY ${orderClause}
+       LIMIT ? OFFSET ?`,
+      [...params, parseInt(page_size), offset]
+    );
+
+    const total = parseInt(summary.total) || 0;
+
+    res.json({
+      code: 0,
+      data: {
+        list: rows,
+        total,
+        page: parseInt(page),
+        page_size: parseInt(page_size),
+        summary: {
+          cost: parseFloat(summary.cost) || 0,
+          orders: parseInt(summary.orders) || 0,
+          gmv: parseFloat(summary.gmv) || 0,
+          shows: parseInt(summary.shows) || 0,
+          clicks: parseInt(summary.clicks) || 0,
+        }
+      }
+    });
+  } catch (e) {
+    logger.error('[Campaigns] 列表查询失败', { error: e.message });
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// 单个计划历史趋势
+router.get('/:campaignId/trend', auth(), async (req, res) => {
+  const days = parseInt(req.query.days) || 7;
+  const startDate = dayjs().subtract(days - 1, 'day').format('YYYY-MM-DD');
+  try {
+    const [rows] = await db.query(
+      `SELECT DATE_FORMAT(stat_date, '%Y-%m-%d') AS stat_date,
+        cost, convert_cnt AS orders, cpm AS gmv,
+        CASE WHEN cost>0 THEN cpm/cost ELSE 0 END AS roi,
+        convert_cost AS cpo, show_cnt, click_cnt
+       FROM qc_daily_stats WHERE entity_id=? AND entity_type='campaign' AND stat_date >= ?
+       ORDER BY stat_date`,
+      [req.params.campaignId, startDate]
+    );
+    res.json({ code: 0, data: rows });
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
+// ===== 汇报推送功能 =====
+
+const DEFAULT_PUSH_FIELDS = {
+  cost: true, gmv: true, orders: true, roi: true,
+  convert_cost: true, plan_count: true, top_plans: true
+};
+
+// 获取推送配置
+router.get('/push-config/:advertiser_id', auth(), async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT * FROM qc_report_push_configs WHERE advertiser_id=?',
+      [req.params.advertiser_id]
+    );
+    if (rows.length) {
+      const row = rows[0];
+      row.push_fields = typeof row.push_fields === 'string' ? JSON.parse(row.push_fields) : row.push_fields;
+      res.json({ code: 0, data: row });
+    } else {
+      res.json({ code: 0, data: { advertiser_id: req.params.advertiser_id, webhook_url: '', push_fields: DEFAULT_PUSH_FIELDS, enabled: 1 } });
+    }
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
+// 保存推送配置
+router.post('/push-config/:advertiser_id', auth(), async (req, res) => {
+  const { webhook_url, push_fields } = req.body;
+  if (!webhook_url) return res.json({ code: 400, msg: 'Webhook URL 不能为空' });
+  try {
+    await db.query(
+      `INSERT INTO qc_report_push_configs (advertiser_id, webhook_url, push_fields)
+       VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE webhook_url=VALUES(webhook_url), push_fields=VALUES(push_fields)`,
+      [req.params.advertiser_id, webhook_url, JSON.stringify(push_fields || DEFAULT_PUSH_FIELDS)]
+    );
+    res.json({ code: 0, msg: '配置保存成功' });
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
+// 触发推送
+router.post('/push-report/:advertiser_id', auth(), async (req, res) => {
+  const advId = req.params.advertiser_id;
+  const today = dayjs().format('YYYY-MM-DD');
+
+  try {
+    // 1. 获取推送配置
+    const [cfgRows] = await db.query('SELECT * FROM qc_report_push_configs WHERE advertiser_id=?', [advId]);
+    if (!cfgRows.length || !cfgRows[0].webhook_url) {
+      return res.json({ code: 400, msg: '请先配置钉钉 Webhook URL' });
+    }
+    const cfg = cfgRows[0];
+    const fields = typeof cfg.push_fields === 'string' ? JSON.parse(cfg.push_fields) : (cfg.push_fields || DEFAULT_PUSH_FIELDS);
+
+    // 2. 查账户名称
+    const [[accRow]] = await db.query('SELECT advertiser_name FROM qc_accounts WHERE advertiser_id=?', [advId]);
+    const accName = accRow?.advertiser_name || advId;
+
+    // 3. 查账户级数据
+    const [[accData]] = await db.query(
+      `SELECT cost, cpm AS gmv, convert_cnt AS orders, convert_cost
+       FROM qc_daily_stats WHERE entity_id=? AND entity_type='account' AND stat_date=?`,
+      [advId, today]
+    );
+    const d = {
+      cost: parseFloat(accData?.cost || 0),
+      gmv: parseFloat(accData?.gmv || 0),
+      orders: parseInt(accData?.orders || 0),
+      convert_cost: parseFloat(accData?.convert_cost || 0),
+    };
+    d.roi = d.cost > 0 ? (d.gmv / d.cost).toFixed(2) : '0.00';
+
+    // 4. 查计划数
+    const [[planCnt]] = await db.query(
+      `SELECT COUNT(*) AS cnt FROM qc_daily_stats WHERE advertiser_id=? AND entity_type='campaign' AND stat_date=?`,
+      [advId, today]
+    );
+    d.plan_count = parseInt(planCnt?.cnt || 0);
+
+    // 5. 查 TOP5 计划
+    let topPlans = [];
+    if (fields.top_plans) {
+      const [tpRows] = await db.query(
+        `SELECT entity_name AS name, cost, convert_cnt AS orders, cpm AS gmv,
+          CASE WHEN cost>0 THEN cpm/cost ELSE 0 END AS roi
+         FROM qc_daily_stats WHERE advertiser_id=? AND entity_type='campaign' AND stat_date=?
+         ORDER BY cost DESC LIMIT 5`,
+        [advId, today]
+      );
+      topPlans = tpRows;
+    }
+
+    // 6. 格式化 Markdown
+    const fmtMoney = (v) => parseFloat(v).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    let md = `# ${accName} 日报\n> 日期：${today}\n\n`;
+
+    md += '## 核心指标\n';
+    if (fields.cost) md += `- 整体消耗：¥${fmtMoney(d.cost)}\n`;
+    if (fields.gmv) md += `- 成交金额：¥${fmtMoney(d.gmv)}\n`;
+    if (fields.orders) md += `- 成交订单：${d.orders}单\n`;
+    if (fields.roi) md += `- ROI：${d.roi}\n`;
+    if (fields.convert_cost) md += `- 转化成本：¥${fmtMoney(d.convert_cost)}\n`;
+    if (fields.plan_count) md += `- 投放计划数：${d.plan_count}\n`;
+
+    if (fields.top_plans && topPlans.length) {
+      md += '\n## TOP5 消耗计划\n';
+      for (const p of topPlans) {
+        const pName = (p.name || '').length > 20 ? p.name.slice(0, 20) + '...' : (p.name || '-');
+        const pRoi = p.cost > 0 ? (parseFloat(p.gmv) / parseFloat(p.cost)).toFixed(2) : '0.00';
+        md += `- ${pName}｜消耗¥${fmtMoney(p.cost)}｜${p.orders || 0}单｜ROI ${pRoi}\n`;
+      }
+    }
+
+    md += `\n---\n*自动推送于 ${dayjs().format('HH:mm')}*`;
+
+    // 7. 发送钉钉
+    await axios.post(cfg.webhook_url, {
+      msgtype: 'markdown',
+      markdown: { title: `${accName} 日报`, text: md }
+    }, { timeout: 10000 });
+
+    logger.info('[ReportPush] 推送成功', { advertiser_id: advId });
+    res.json({ code: 0, msg: '推送成功' });
+  } catch (e) {
+    logger.error('[ReportPush] 推送失败', { advertiser_id: advId, error: e.message });
+    res.json({ code: 500, msg: '推送失败: ' + e.message });
+  }
+});
+
+module.exports = router;

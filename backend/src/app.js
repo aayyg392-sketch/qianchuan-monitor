@@ -20,7 +20,8 @@ app.use(compression());
 app.use(cors({ origin: '*', methods: ['GET','POST','PUT','DELETE','OPTIONS'], allowedHeaders: ['Content-Type','Authorization'] }));
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
-app.use(rateLimit({ windowMs: 60000, max: 300, message: { code: 429, msg: '请求过于频繁' } }));
+app.set('trust proxy', 1);
+app.use(rateLimit({ windowMs: 60000, max: 300, message: { code: 429, msg: '请求过于频繁' }, validate: { xForwardedForHeader: false } }));
 
 // 路由
 app.use('/api/auth', require('./routes/auth'));
@@ -34,7 +35,7 @@ app.use('/api/settings', require('./routes/settings'));
 app.use('/api/material-tasks', require('./routes/material-tasks'));
 app.use('/api/video-production', require('./routes/video-production'));
 app.use('/api/material-summary', require('./routes/material-summary'));
-app.use('/api/incubation', require('./routes/incubation'));
+
 app.use('/api/audience', require('./routes/audience'));
 app.use('/api/influencer', require('./routes/influencer'));
 app.use('/api/material-audit', require('./routes/material-audit'));
@@ -42,7 +43,31 @@ app.use('/api/super5s', require('./routes/super5s'));
 app.use('/api/runway', require('./routes/runway'));
 app.use('/api/operations', require('./routes/operations'));
 app.use('/api/material-dimensions', require('./routes/material-dimensions'));
+app.use('/api/industry', require('./routes/industry'));
+app.use('/api/industry-videos', require('./routes/industry-videos'));
+app.use('/api/competitor-videos', require('./routes/competitor-videos'));
 app.use('/api/live', require('./routes/live'));
+app.use('/api/anchor', require('./routes/anchor'));
+app.use('/api/ai-pitcher', require('./routes/ai-pitcher'));
+app.use('/api/live', require('./routes/live-auto-reply'));
+app.use('/api/wechat-channels', require('./routes/wechat-channels'));
+app.use('/api/wx-compass', require('./routes/wx-compass'));
+app.use('/api/ks', require('./routes/ks'));
+app.use('/api/ks-wb', require('./routes/ks-workbench'));
+app.use("/api/ks-reviews", require("./routes/ks-reviews"));
+app.use("/api/ks-ad", require("./routes/ks-ad"));
+app.use("/api/ks-ad-dash", require("./routes/ks-ad-dashboard"));
+app.use("/api/ks-pitcher", require("./routes/ks-ad-pitcher"));
+app.use("/api/ks-live", require("./routes/ks-live-analytics"));
+// 跨境TikTok模块（独立路由组）
+app.use('/api/tiktok', require('./routes/tiktok'));
+app.use('/api/tt-materials', require('./routes/tt-materials'));
+app.use('/api/tt-push', require('./routes/tt-push'));
+app.use('/api/tt-stats', require('./routes/tt-stats'));
+app.use('/api/tt-dashboard', require('./routes/tt-dashboard'));
+// TikTok素材静态文件
+app.use('/tt-materials', express.static('/home/www/qianchuan-monitor/tt-materials'));
+
 app.get('/api/health', (req, res) => res.json({ code: 0, status: 'ok', time: new Date().toISOString() }));
 
 // 生成视频静态文件

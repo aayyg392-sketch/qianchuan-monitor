@@ -3,16 +3,15 @@
     <div class="page-header">
       <h2 class="page-title">分时数据</h2>
       <div class="page-header__actions">
-        <a-select v-model:value="selectedRoom" style="width: 200px" placeholder="选择直播间" @change="loadData">
-          <a-select-option v-for="room in rooms" :key="room.id" :value="room.id">{{ room.nickname }}</a-select-option>
-        </a-select>
+        <a-select v-model:value="selectedRoom" style="width: 260px" placeholder="选择直播间" @change="loadData" showSearch optionFilterProp="label"
+          :options="rooms.map(r => ({ value: r.id, label: r.nickname + (r.advertiser_name ? ' (' + r.advertiser_name.replace(/.*-/, '') + ')' : '') }))" />
         <a-date-picker v-model:value="selectedDate" @change="loadData" />
       </div>
     </div>
 
     <!-- Time Granularity Selector -->
     <div class="granularity-bar">
-      <a-segmented v-model:value="granularity" :options="['5分钟', '15分钟', '30分钟', '1小时']" @change="loadData" />
+      <a-segmented v-model:value="granularity" :options="['10分钟', '20分钟', '30分钟', '1小时']" @change="loadData" />
     </div>
 
     <!-- Tab Categories -->
@@ -76,7 +75,7 @@ import dayjs from 'dayjs'
 
 const selectedRoom = ref(null)
 const selectedDate = ref(dayjs())
-const granularity = ref('5分钟')
+const granularity = ref('10分钟')
 const dataTab = ref('traffic')
 const rooms = ref([])
 
@@ -151,8 +150,8 @@ const loadRooms = async () => {
 
 // 按时间粒度聚合数据（累计值 → 平滑增量值）
 const aggregateByGranularity = (rawData) => {
-  const minsMap = { '5分钟': 5, '15分钟': 15, '30分钟': 30, '1小时': 60 }
-  const mins = minsMap[granularity.value] || 5
+  const minsMap = { '10分钟': 10, '20分钟': 20, '30分钟': 30, '1小时': 60 }
+  const mins = minsMap[granularity.value] || 10
 
   // Step 1: 按时段分桶，每个桶取最后一条的累计值
   const buckets = {}
@@ -228,7 +227,7 @@ const aggregateByGranularity = (rawData) => {
       roi: dCost > 0 ? (dGmv / dCost).toFixed(2) : (cur.cost > 0 ? cur.roi_raw.toFixed(2) : '-'),
     })
   }
-  return result
+  return result.reverse()
 }
 
 const loadData = async () => {

@@ -11,16 +11,18 @@ router.get('/daily-detail', auth(), async (req, res) => {
   }
 
   try {
+    const aw = req.accWhere || '';
+    const ap = req.accParams || [];
     // 花费/转化从 qc_daily_stats campaign 级聚合
     const [costRows] = await db.query(
       `SELECT DATE_FORMAT(d.stat_date, '%Y-%m-%d') AS stat_date,
         SUM(d.cost) AS cost,
         SUM(d.convert_cnt) AS convert_cnt
        FROM qc_daily_stats d
-       WHERE d.stat_date BETWEEN ? AND ? AND d.entity_type = 'campaign'
+       WHERE d.stat_date BETWEEN ? AND ? AND d.entity_type = 'campaign'${aw}
        GROUP BY d.stat_date
        ORDER BY d.stat_date`,
-      [startDate, endDate]
+      [startDate, endDate, ...ap]
     );
 
     // 展示/点击从 qc_material_stats 聚合
@@ -29,9 +31,9 @@ router.get('/daily-detail', auth(), async (req, res) => {
         SUM(show_cnt) AS show_cnt,
         SUM(click_cnt) AS click_cnt
        FROM qc_material_stats
-       WHERE stat_date BETWEEN ? AND ?
+       WHERE stat_date BETWEEN ? AND ?${aw}
        GROUP BY stat_date`,
-      [startDate, endDate]
+      [startDate, endDate, ...ap]
     );
 
     // 合并两个数据源
@@ -58,12 +60,12 @@ router.get('/daily-detail', auth(), async (req, res) => {
        LEFT JOIN (
          SELECT advertiser_id, stat_date, SUM(click_cnt) AS click_cnt
          FROM qc_material_stats
-         WHERE stat_date BETWEEN ? AND ?
+         WHERE stat_date BETWEEN ? AND ?${aw}
          GROUP BY advertiser_id, stat_date
        ) m ON d.advertiser_id = m.advertiser_id AND d.stat_date = m.stat_date
-       WHERE d.stat_date BETWEEN ? AND ? AND d.entity_type = 'campaign'
+       WHERE d.stat_date BETWEEN ? AND ? AND d.entity_type = 'campaign'${aw.replace(/advertiser_id/g, 'd.advertiser_id')}
        GROUP BY a.account_type`,
-      [startDate, endDate, startDate, endDate]
+      [startDate, endDate, ...ap, startDate, endDate, ...ap]
     );
 
     const goals = {};

@@ -1,0 +1,458 @@
+const express = require('express');
+const router = express.Router();
+const db = require('../db');
+const auth = require('../middleware/auth');
+const logger = require('../logger');
+const dayjs = require('dayjs');
+
+// ========== 自动建表 ==========
+(async () => {
+  try {
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS qc_pitcher_configs (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        advertiser_id VARCHAR(30) NOT NULL,
+        enabled TINYINT DEFAULT 0,
+        min_roi DECIMAL(6,2) DEFAULT 1.5,
+        stop_roi DECIMAL(6,2) DEFAULT 0.8,
+        min_cost DECIMAL(10,2) DEFAULT 100,
+        min_cvr DECIMAL(6,2) DEFAULT 1.0,
+        poll_interval INT DEFAULT 60,
+        budget_multiply DECIMAL(4,2) DEFAULT 1.5,
+        bid_up_pct DECIMAL(4,2) DEFAULT 5.0,
+        bid_down_pct DECIMAL(4,2) DEFAULT 5.0,
+        max_budget_multiply DECIMAL(4,2) DEFAULT 3.0,
+        no_convert_minutes INT DEFAULT 30,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_adv (advertiser_id)
+      )
+    `);
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS qc_pitcher_logs (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        advertiser_id VARCHAR(30),
+        ad_id VARCHAR(30),
+        ad_name VARCHAR(200),
+        material_title VARCHAR(300),
+        cost DECIMAL(12,2) DEFAULT 0,
+        roi DECIMAL(6,2) DEFAULT 0,
+        cvr DECIMAL(6,2) DEFAULT 0,
+        gmv DECIMAL(12,2) DEFAULT 0,
+        orders INT DEFAULT 0,
+        show_cnt INT DEFAULT 0,
+        click_cnt INT DEFAULT 0,
+        action ENUM('scale_up','hold','scale_down','stop_scale') DEFAULT 'hold',
+        action_detail VARCHAR(500),
+        old_budget DECIMAL(12,2),
+        new_budget DECIMAL(12,2),
+        old_bid DECIMAL(10,2),
+        new_bid DECIMAL(10,2),
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_adv_time (advertiser_id, created_at),
+        INDEX idx_action (action)
+      )
+    `);
+
+    // ===== 一键调速字段 =====
+    try { await db.query('ALTER TABLE qc_pitcher_configs ADD COLUMN boost_enabled TINYINT DEFAULT 0'); } catch (e) {}
+    try { await db.query('ALTER TABLE qc_pitcher_configs ADD COLUMN boost_min_roi DECIMAL(6,2) DEFAULT 1.0'); } catch (e) {}
+    try { await db.query('ALTER TABLE qc_pitcher_configs ADD COLUMN boost_budget DECIMAL(10,2) DEFAULT 200'); } catch (e) {}
+    try { await db.query('ALTER TABLE qc_pitcher_configs ADD COLUMN boost_duration DECIMAL(4,1) DEFAULT 6'); } catch (e) {}
+    try { await db.query('ALTER TABLE qc_pitcher_configs ADD COLUMN boost_poll_interval INT DEFAULT 60'); } catch (e) {}
+
+    // ===== 扩展action枚举 =====
+    try { await db.query("ALTER TABLE qc_pitcher_logs MODIFY COLUMN action VARCHAR(30) DEFAULT 'hold'"); } catch (e) {}
+
+    // ===== 差素材自动清理 配置字段 =====
+    // ===== enabled_rules 字段 =====
+    try {
+      await db.query("ALTER TABLE qc_pitcher_configs ADD COLUMN enabled_rules TEXT DEFAULT 'min_roi,stop_roi,min_cost,no_convert,budget_multiply,max_budget_multiply,bid_up_pct,bid_down_pct'");
+    } catch (e) { /* 字段已存在 */ }
+
+    try {
+      await db.query('ALTER TABLE qc_pitcher_configs ADD COLUMN material_auto_clean_enabled TINYINT DEFAULT 0');
+    } catch (e) { /* 字段已存在 */ }
+    try {
+      await db.query('ALTER TABLE qc_pitcher_configs ADD COLUMN material_clean_min_cost DECIMAL(10,2) DEFAULT 50');
+    } catch (e) { /* 字段已存在 */ }
+    try {
+      await db.query('ALTER TABLE qc_pitcher_configs ADD COLUMN material_clean_bad_roi DECIMAL(6,2) DEFAULT 0.5');
+    } catch (e) { /* 字段已存在 */ }
+    try {
+      await db.query('ALTER TABLE qc_pitcher_configs ADD COLUMN material_clean_min_show INT DEFAULT 5000');
+    } catch (e) { /* 字段已存在 */ }
+    try {
+      await db.query('ALTER TABLE qc_pitcher_configs ADD COLUMN material_clean_days INT DEFAULT 3');
+    } catch (e) { /* 字段已存在 */ }
+    try {
+      await db.query('ALTER TABLE qc_pitcher_configs ADD COLUMN material_clean_min_orders INT DEFAULT 0');
+    } catch (e) { /* 字段已存在 */ }
+    try {
+      await db.query('ALTER TABLE qc_pitcher_configs ADD COLUMN material_clean_min_ctr DECIMAL(6,2) DEFAULT 0.5');
+    } catch (e) { /* 字段已存在 */ }
+
+    // ===== 清理规则启用字段 =====
+    try { await db.query("ALTER TABLE qc_pitcher_configs ADD COLUMN clean_enabled_rules VARCHAR(200) DEFAULT 'min_cost,bad_roi,low_order,min_show,low_ctr'"); } catch (e) {}
+
+    // ===== 素材追投字段 =====
+    try { await db.query('ALTER TABLE qc_pitcher_configs ADD COLUMN mat_boost_enabled TINYINT DEFAULT 0'); } catch (e) {}
+    try { await db.query('ALTER TABLE qc_pitcher_configs ADD COLUMN mat_boost_budget DECIMAL(10,2) DEFAULT 200'); } catch (e) {}
+    try { await db.query('ALTER TABLE qc_pitcher_configs ADD COLUMN mat_boost_duration DECIMAL(4,1) DEFAULT 6'); } catch (e) {}
+    try { await db.query('ALTER TABLE qc_pitcher_configs ADD COLUMN mat_boost_poll_interval INT DEFAULT 60'); } catch (e) {}
+    try { await db.query("ALTER TABLE qc_pitcher_configs ADD COLUMN mat_boost_rules JSON DEFAULT NULL"); } catch (e) {}
+
+    // 素材追投日志表
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS qc_material_boost_logs (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        advertiser_id VARCHAR(30) NOT NULL,
+        ad_id VARCHAR(30) NOT NULL,
+        ad_name VARCHAR(200) DEFAULT '',
+        material_id VARCHAR(50) NOT NULL,
+        video_name VARCHAR(300) DEFAULT '',
+        cost DECIMAL(12,2) DEFAULT 0,
+        roi DECIMAL(6,2) DEFAULT 0,
+        orders INT DEFAULT 0,
+        ctr DECIMAL(6,2) DEFAULT 0,
+        show_cnt INT DEFAULT 0,
+        budget DECIMAL(10,2) DEFAULT 0,
+        task_id VARCHAR(30) DEFAULT '',
+        reason VARCHAR(500) DEFAULT '',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_adv_date (advertiser_id, created_at),
+        INDEX idx_material (material_id, created_at)
+      )
+    `);
+
+    // 差素材自动清理日志表
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS qc_material_clean_logs (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        advertiser_id VARCHAR(30) NOT NULL,
+        ad_id VARCHAR(30) NOT NULL,
+        ad_name VARCHAR(200) DEFAULT '',
+        material_id VARCHAR(50) NOT NULL,
+        video_name VARCHAR(300) DEFAULT '',
+        cost DECIMAL(12,2) DEFAULT 0,
+        roi DECIMAL(6,2) DEFAULT 0,
+        orders INT DEFAULT 0,
+        reason VARCHAR(500) DEFAULT '',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_adv_date (advertiser_id, created_at),
+        INDEX idx_material (material_id, created_at)
+      )
+    `);
+
+    logger.info('[AiPitcher] 表结构就绪');
+  } catch (e) { /* exists */ }
+})();
+
+// ========== GET /config/:advertiser_id ==========
+router.get('/config/:advertiser_id', auth(), async (req, res) => {
+  try {
+    const [[row]] = await db.query('SELECT * FROM qc_pitcher_configs WHERE advertiser_id=?', [req.params.advertiser_id]);
+    res.json({ code: 0, data: row || null });
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
+// ========== POST /config/:advertiser_id — 保存配置并自动启动 ==========
+router.post('/config/:advertiser_id', auth(), async (req, res) => {
+  const aid = req.params.advertiser_id;
+  const {
+    min_roi, stop_roi, min_cost, min_cvr, poll_interval, budget_multiply,
+    bid_up_pct, bid_down_pct, max_budget_multiply, no_convert_minutes, auto_start, enabled_rules,
+    boost_enabled, boost_min_roi, boost_budget, boost_duration, boost_poll_interval,
+    material_auto_clean_enabled, material_clean_min_cost, material_clean_bad_roi, material_clean_min_show,
+    material_clean_days, material_clean_min_orders, material_clean_min_ctr, clean_enabled_rules,
+    mat_boost_enabled, mat_boost_budget, mat_boost_duration, mat_boost_poll_interval, mat_boost_rules
+  } = req.body;
+  try {
+    // auto_start=false时保留当前enabled状态，不覆盖
+    let shouldEnable;
+    if (auto_start === false) {
+      const [[cur]] = await db.query('SELECT enabled FROM qc_pitcher_configs WHERE advertiser_id=?', [aid]);
+      shouldEnable = cur ? cur.enabled : 0;
+    } else {
+      shouldEnable = 1;
+    }
+    const rulesStr = enabled_rules || 'min_roi,stop_roi,min_cost,no_convert,budget_multiply,max_budget_multiply,bid_up_pct,bid_down_pct';
+    const matBoostRulesJson = mat_boost_rules ? (typeof mat_boost_rules === 'string' ? mat_boost_rules : JSON.stringify(mat_boost_rules)) : null;
+    const cleanRulesStr = clean_enabled_rules || 'min_cost,bad_roi,low_order,min_show,low_ctr';
+    await db.query(`INSERT INTO qc_pitcher_configs (advertiser_id, enabled, min_roi, stop_roi, min_cost, min_cvr, poll_interval, budget_multiply, bid_up_pct, bid_down_pct, max_budget_multiply, no_convert_minutes, enabled_rules, boost_enabled, boost_min_roi, boost_budget, boost_duration, boost_poll_interval, material_auto_clean_enabled, material_clean_min_cost, material_clean_bad_roi, material_clean_min_show, material_clean_days, material_clean_min_orders, material_clean_min_ctr, clean_enabled_rules, mat_boost_enabled, mat_boost_budget, mat_boost_duration, mat_boost_poll_interval, mat_boost_rules)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON DUPLICATE KEY UPDATE enabled=VALUES(enabled), min_roi=VALUES(min_roi), stop_roi=VALUES(stop_roi), min_cost=VALUES(min_cost), min_cvr=VALUES(min_cvr),
+        poll_interval=VALUES(poll_interval), budget_multiply=VALUES(budget_multiply), bid_up_pct=VALUES(bid_up_pct), bid_down_pct=VALUES(bid_down_pct),
+        max_budget_multiply=VALUES(max_budget_multiply), no_convert_minutes=VALUES(no_convert_minutes), enabled_rules=VALUES(enabled_rules),
+        boost_enabled=VALUES(boost_enabled), boost_min_roi=VALUES(boost_min_roi), boost_budget=VALUES(boost_budget), boost_duration=VALUES(boost_duration),
+        boost_poll_interval=VALUES(boost_poll_interval),
+        material_auto_clean_enabled=VALUES(material_auto_clean_enabled), material_clean_min_cost=VALUES(material_clean_min_cost),
+        material_clean_bad_roi=VALUES(material_clean_bad_roi), material_clean_min_show=VALUES(material_clean_min_show),
+        material_clean_days=VALUES(material_clean_days), material_clean_min_orders=VALUES(material_clean_min_orders),
+        material_clean_min_ctr=VALUES(material_clean_min_ctr), clean_enabled_rules=VALUES(clean_enabled_rules),
+        mat_boost_enabled=VALUES(mat_boost_enabled), mat_boost_budget=VALUES(mat_boost_budget),
+        mat_boost_duration=VALUES(mat_boost_duration), mat_boost_poll_interval=VALUES(mat_boost_poll_interval),
+        mat_boost_rules=VALUES(mat_boost_rules)`,
+      [aid, shouldEnable, min_roi??1.5, stop_roi??0.8, min_cost??100, min_cvr??1.0, poll_interval??60, budget_multiply??1.5, bid_up_pct??5, bid_down_pct??5, max_budget_multiply??3, no_convert_minutes??30, rulesStr,
+       boost_enabled??0, boost_min_roi??1.0, boost_budget??200, boost_duration??6, boost_poll_interval??60,
+       material_auto_clean_enabled??0, material_clean_min_cost??50, material_clean_bad_roi??0.5, material_clean_min_show??5000,
+       material_clean_days??3, material_clean_min_orders??0, material_clean_min_ctr??0.5, cleanRulesStr,
+       mat_boost_enabled??0, mat_boost_budget??200, mat_boost_duration??6, mat_boost_poll_interval??60, matBoostRulesJson]
+    );
+    // 写启动日志
+    if (shouldEnable) {
+      await db.query('INSERT INTO qc_pitcher_logs (advertiser_id, action, action_detail) VALUES (?,?,?)',
+        [aid, 'hold', '配置已保存，AI投手自动启动']).catch(() => {});
+    }
+    res.json({ code: 0, msg: shouldEnable ? '配置已保存并启动AI投手' : '配置已保存', enabled: shouldEnable });
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
+// ========== POST /start/:advertiser_id ==========
+router.post('/start/:advertiser_id', auth(), async (req, res) => {
+  try {
+    const [result] = await db.query('UPDATE qc_pitcher_configs SET enabled=1 WHERE advertiser_id=?', [req.params.advertiser_id]);
+    if (result.affectedRows === 0) {
+      return res.json({ code: 400, msg: '请先保存配置' });
+    }
+    await db.query('INSERT INTO qc_pitcher_logs (advertiser_id, action, action_detail) VALUES (?,?,?)',
+      [req.params.advertiser_id, 'hold', 'AI金牌投手已启动']);
+    res.json({ code: 0, msg: 'AI投手已启动' });
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
+// ========== POST /stop/:advertiser_id ==========
+router.post('/stop/:advertiser_id', auth(), async (req, res) => {
+  try {
+    await db.query('UPDATE qc_pitcher_configs SET enabled=0 WHERE advertiser_id=?', [req.params.advertiser_id]);
+    await db.query('INSERT INTO qc_pitcher_logs (advertiser_id, action, action_detail) VALUES (?,?,?)',
+      [req.params.advertiser_id, 'hold', 'AI金牌投手已停止']);
+    res.json({ code: 0, msg: 'AI投手已停止' });
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
+// ========== GET /status ==========
+router.get('/status', auth(), async (req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT c.advertiser_id, a.advertiser_name, c.enabled, c.min_roi, c.stop_roi, c.poll_interval, c.updated_at,
+        c.material_auto_clean_enabled, c.boost_enabled, c.mat_boost_enabled,
+        (SELECT COUNT(DISTINCT l.ad_id) FROM qc_pitcher_logs l WHERE l.advertiser_id=c.advertiser_id AND l.action='scale_up' AND l.created_at>=CURDATE()) AS today_scale_up,
+        (SELECT COUNT(DISTINCT l.ad_id) FROM qc_pitcher_logs l WHERE l.advertiser_id=c.advertiser_id AND l.action='scale_down' AND l.created_at>=CURDATE()) AS today_scale_down,
+        (SELECT COUNT(DISTINCT l.ad_id) FROM qc_pitcher_logs l WHERE l.advertiser_id=c.advertiser_id AND l.action='hold' AND l.created_at>=CURDATE()) AS today_hold,
+        (SELECT COUNT(*) FROM qc_pitcher_logs l WHERE l.advertiser_id=c.advertiser_id AND l.action='scale_up' AND l.created_at>=CURDATE()) AS today_scale_up_times,
+        (SELECT COUNT(*) FROM qc_pitcher_logs l WHERE l.advertiser_id=c.advertiser_id AND l.action='scale_down' AND l.created_at>=CURDATE()) AS today_scale_down_times,
+        (SELECT COALESCE(SUM(l.cost),0) FROM qc_pitcher_logs l WHERE l.advertiser_id=c.advertiser_id AND l.created_at>=CURDATE() AND l.action IN ('scale_up','scale_down','hold') AND l.id IN (SELECT MAX(l2.id) FROM qc_pitcher_logs l2 WHERE l2.advertiser_id=c.advertiser_id AND l2.created_at>=CURDATE() GROUP BY l2.ad_id)) AS today_cost,
+        (SELECT COALESCE(SUM(l.gmv),0) FROM qc_pitcher_logs l WHERE l.advertiser_id=c.advertiser_id AND l.created_at>=CURDATE() AND l.action IN ('scale_up','scale_down','hold') AND l.id IN (SELECT MAX(l2.id) FROM qc_pitcher_logs l2 WHERE l2.advertiser_id=c.advertiser_id AND l2.created_at>=CURDATE() GROUP BY l2.ad_id)) AS today_gmv,
+        (SELECT created_at FROM qc_pitcher_logs l WHERE l.advertiser_id=c.advertiser_id ORDER BY l.id DESC LIMIT 1) AS last_run,
+        (SELECT COUNT(*) FROM qc_material_clean_logs cl WHERE cl.advertiser_id=c.advertiser_id AND cl.created_at>=CURDATE()) AS today_auto_clean_count,
+        (SELECT COUNT(*) FROM qc_pitcher_logs l WHERE l.advertiser_id=c.advertiser_id AND l.action IN ('boost_on','boost_enable') AND l.created_at>=CURDATE()) AS today_boost_count,
+        (SELECT COUNT(*) FROM qc_material_boost_logs mb WHERE mb.advertiser_id=c.advertiser_id AND mb.ad_id!='' AND mb.created_at>=CURDATE()) AS today_mat_boost_count
+      FROM qc_pitcher_configs c
+      LEFT JOIN qc_accounts a ON c.advertiser_id=a.advertiser_id
+    `);
+    res.json({ code: 0, data: rows });
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
+// ========== GET /logs/:advertiser_id ==========
+router.get('/logs/:advertiser_id', auth(), async (req, res) => {
+  const { page = 1, page_size = 50, action } = req.query;
+  const offset = (parseInt(page) - 1) * parseInt(page_size);
+  try {
+    let where = 'WHERE advertiser_id=?';
+    const params = [req.params.advertiser_id];
+    if (action) {
+      const actions = action.split(',').map(a => a.trim()).filter(Boolean);
+      if (actions.length) {
+        where += ' AND action IN (' + actions.map(() => '?').join(',') + ')';
+        params.push(...actions);
+      }
+    }
+    const [[{ total }]] = await db.query('SELECT COUNT(*) AS total FROM qc_pitcher_logs ' + where, params);
+    const [rows] = await db.query(
+      'SELECT * FROM qc_pitcher_logs ' + where + ' ORDER BY id DESC LIMIT ? OFFSET ?',
+      [...params, parseInt(page_size), offset]
+    );
+    res.json({ code: 0, data: { list: rows, total } });
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
+// ========== POST /run-once/:advertiser_id — 手动执行一次 ==========
+router.post('/run-once/:advertiser_id', auth(), async (req, res) => {
+  try {
+    const pitcherEngine = require('../services/pitcher-engine');
+    const result = await pitcherEngine.runOnce(req.params.advertiser_id);
+    res.json({ code: 0, data: result, msg: result.skipped ? result.reason : '执行完成' });
+  } catch (e) {
+    logger.error('[AiPitcher] run-once error', { error: e.message, stack: e.stack });
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// ========== GET /material-clean-logs/:advertiser_id — 查询素材自动清理日志 ==========
+router.get('/material-clean-logs/:advertiser_id', auth(), async (req, res) => {
+  const { page = 1, page_size = 50 } = req.query;
+  const offset = (parseInt(page) - 1) * parseInt(page_size);
+  try {
+    const [[{ total }]] = await db.query('SELECT COUNT(*) AS total FROM qc_material_clean_logs WHERE advertiser_id=?', [req.params.advertiser_id]);
+    const [rows] = await db.query(
+      'SELECT * FROM qc_material_clean_logs WHERE advertiser_id=? ORDER BY id DESC LIMIT ? OFFSET ?',
+      [req.params.advertiser_id, parseInt(page_size), offset]
+    );
+    res.json({ code: 0, data: { list: rows, total } });
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
+// ========== POST /material-auto-clean/:advertiser_id — 手动触发一次差素材自动清理 ==========
+router.post('/material-auto-clean/:advertiser_id', auth(), async (req, res) => {
+  const advertiserId = req.params.advertiser_id;
+  try {
+    const pitcherEngine = require('../services/pitcher-engine');
+    const result = await pitcherEngine.runMaterialAutoClean(advertiserId);
+    res.json({ code: 0, data: result, msg: result.skipped ? result.reason : '差素材自动清理执行完成' });
+  } catch (e) {
+    logger.error('[AiPitcher] material-auto-clean error', { error: e.message, stack: e.stack });
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// ========== POST /material-ops-log/:advertiser_id — 写素材操作日志 ==========
+router.post('/material-ops-log/:advertiser_id', auth(), async (req, res) => {
+  const aid = req.params.advertiser_id;
+  const { action, detail } = req.body;
+  try {
+    await db.query('INSERT INTO qc_pitcher_logs (advertiser_id, action, action_detail) VALUES (?,?,?)',
+      [aid, action || 'clean_run', detail || '']);
+    res.json({ code: 0, msg: 'ok' });
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
+// ========== GET /material-ops-logs/:advertiser_id — 查询素材操作记录 ==========
+router.get('/material-ops-logs/:advertiser_id', auth(), async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      "SELECT * FROM qc_pitcher_logs WHERE advertiser_id=? AND action IN ('clean_enable','clean_disable','clean_run','clean_auto') ORDER BY id DESC LIMIT 50",
+      [req.params.advertiser_id]
+    );
+    res.json({ code: 0, data: { list: rows } });
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
+// ========== GET /material-ranking/:advertiser_id — 素材效果排行 ==========
+router.get('/material-ranking/:advertiser_id', auth(), async (req, res) => {
+  const aid = req.params.advertiser_id;
+  try {
+    // 1. 获取token
+    const [[account]] = await db.query('SELECT access_token FROM qc_accounts WHERE advertiser_id=? AND status=1', [aid]);
+    if (!account || !account.access_token) return res.json({ code: 400, msg: 'token不可用' });
+
+    const QianChuanAPI = require('../services/qianchuan');
+    const api = new QianChuanAPI(account.access_token);
+
+    // 2. 获取配置中的ROI目标
+    const [[config]] = await db.query('SELECT min_roi, stop_roi FROM qc_pitcher_configs WHERE advertiser_id=?', [aid]);
+    const targetRoi = config?.min_roi || 1.5;
+
+    // 3. 拉取今日素材维度报表
+    const today = dayjs().format('YYYY-MM-DD');
+    const reportRes = await api.getVideoMaterialReport({ advertiserId: aid, startDate: today, endDate: today, pageSize: 200 });
+
+    const rows = reportRes.data?.rows || [];
+    const materials = [];
+
+    const v = (val) => {
+      if (val === null || val === undefined) return 0;
+      if (typeof val === 'object' && val.Value !== undefined) return val.Value;
+      return val;
+    };
+
+    for (const row of rows) {
+      const dims = row.dimensions || {};
+      const mets = row.metrics || {};
+
+      const materialId = String(v(dims.material_id) || '');
+      if (!materialId) continue;
+
+      const cost = parseFloat(v(mets.stat_cost_for_roi2) || 0);
+      const roi = parseFloat(v(mets.total_prepay_and_pay_order_roi2) || 0);
+      const orders = parseInt(v(mets.total_pay_order_count_for_roi2) || 0);
+      const gmv = parseFloat(v(mets.total_pay_order_gmv_for_roi2) || 0);
+      const showCount = parseInt(v(mets.product_show_count_for_roi2) || 0);
+      const clickCount = parseInt(v(mets.product_click_count_for_roi2) || 0);
+      const ctr = showCount > 0 ? parseFloat(((clickCount / showCount) * 100).toFixed(2)) : 0;
+      const cvr = parseFloat(v(mets.product_cvr_rate_for_roi2) || 0);
+      const playCount = parseInt(v(mets.video_play_count_for_roi2_v2) || 0);
+      const finishRate = parseFloat(v(mets.video_play_finish_rate_for_roi2_v2) || 0);
+      const costPerOrder = parseFloat(v(mets.total_cost_per_pay_order_for_roi2) || 0);
+      const gpm = showCount > 0 ? parseFloat(((gmv / showCount) * 1000).toFixed(2)) : 0;
+
+      // 状态标签
+      let status = 'observe'; // 观察
+      if (cost >= 500 && roi >= targetRoi * 1.3 && orders >= 10) {
+        status = 'hot';      // 爆款
+      } else if (roi >= targetRoi && orders > 0) {
+        status = 'healthy';  // 健康
+      } else if (cost >= 50 && (roi < targetRoi * 0.5 && roi > 0 || (cost >= 200 && orders === 0))) {
+        status = 'bad';      // 低效
+      }
+
+      materials.push({
+        material_id: materialId,
+        video_name: String(v(dims.roi2_material_video_name) || '未命名'),
+        cost, roi, orders, gmv, gpm,
+        show_count: showCount, click_count: clickCount,
+        ctr, cvr, play_count: playCount, finish_rate: finishRate,
+        cost_per_order: costPerOrder, status
+      });
+    }
+
+    // 按消耗降序
+    materials.sort((a, b) => b.cost - a.cost);
+
+    res.json({ code: 0, data: { list: materials, target_roi: targetRoi } });
+  } catch (e) {
+    logger.error('[MaterialRanking] 获取失败', { error: e.message });
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// ========== POST /material-boost-config-log/:advertiser_id — 追投配置变更记录 ==========
+router.post('/material-boost-config-log/:advertiser_id', auth(), async (req, res) => {
+  try {
+    const { action, detail } = req.body;
+    await db.query(
+      'INSERT INTO qc_material_boost_logs (advertiser_id, ad_id, ad_name, material_id, video_name, reason) VALUES (?, ?, ?, ?, ?, ?)',
+      [req.params.advertiser_id, '', action === 'enable' ? '启用追投' : '关闭追投', '', '', detail]
+    );
+    res.json({ code: 0 });
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
+// ========== GET /material-boost-logs/:advertiser_id — 素材追投日志 ==========
+router.get('/material-boost-logs/:advertiser_id', auth(), async (req, res) => {
+  const { page = 1, page_size = 50 } = req.query;
+  const offset = (parseInt(page) - 1) * parseInt(page_size);
+  try {
+    const [[{ total }]] = await db.query('SELECT COUNT(*) AS total FROM qc_material_boost_logs WHERE advertiser_id=?', [req.params.advertiser_id]);
+    const [rows] = await db.query(
+      'SELECT * FROM qc_material_boost_logs WHERE advertiser_id=? ORDER BY id DESC LIMIT ? OFFSET ?',
+      [req.params.advertiser_id, parseInt(page_size), offset]
+    );
+    res.json({ code: 0, data: { list: rows, total } });
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
+// ========== POST /run-material-boost/:advertiser_id — 手动触发素材追投 ==========
+router.post('/run-material-boost/:advertiser_id', auth(), async (req, res) => {
+  try {
+    const pitcherEngine = require('../services/pitcher-engine');
+    const result = await pitcherEngine.runMaterialBoost(req.params.advertiser_id);
+    res.json({ code: 0, data: result, msg: result.skipped ? result.reason : '素材追投执行完成' });
+  } catch (e) {
+    logger.error('[MaterialBoost] run error', { error: e.message, stack: e.stack });
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+module.exports = router;

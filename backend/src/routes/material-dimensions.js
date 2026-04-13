@@ -75,6 +75,8 @@ router.get('/analysis', auth(), async (req, res) => {
 
   try {
     // 直接从素材统计表获取数据（title已在表中）
+    const aw = req.accWhere || '';
+    const ap = req.accParams || [];
     const [rows] = await db.query(
       `SELECT title,
         SUM(cost) AS cost,
@@ -84,10 +86,10 @@ router.get('/analysis', auth(), async (req, res) => {
         SUM(click_cnt) AS click_cnt,
         SUM(play_cnt) AS play_cnt
        FROM qc_material_stats
-       WHERE stat_date BETWEEN ? AND ?
+       WHERE stat_date BETWEEN ? AND ?${aw}
        GROUP BY material_id, title
        HAVING SUM(cost) > 0`,
-      [startDate, endDate]
+      [startDate, endDate, ...ap]
     );
 
     // 解析命名并按维度分组

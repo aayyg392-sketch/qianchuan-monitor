@@ -41,16 +41,27 @@ async function getMarketingConfig() {
  */
 async function getAccessToken() {
   try {
+    // 优先使用千川token（与千川共用同一个OAuth主体，token更稳定）
+    const [qcAccounts] = await db.query('SELECT advertiser_id, access_token, token_expires_at FROM qc_accounts WHERE status = 1 ORDER BY token_expires_at DESC LIMIT 1');
+    if (qcAccounts && qcAccounts.length > 0) {
+      const qc = qcAccounts[0];
+      // 千川token有效（未过期或将在1小时内过期）
+      if (!qc.token_expires_at || dayjs(qc.token_expires_at).isAfter(dayjs())) {
+        logger.info('[CommentSync] 使用千川Token', { advertiserId: qc.advertiser_id, expiresAt: qc.token_expires_at });
+        // 同步更新marketing_accounts的token，保持一致
+        await db.query('UPDATE marketing_accounts SET access_token=?, token_expires_at=? WHERE status=1', [qc.access_token, qc.token_expires_at]);
+        return { advertiserId: qc.advertiser_id, accessToken: qc.access_token };
+      }
+    }
+
+    // 千川token也不可用时，尝试营销token
     const [accounts] = await db.query('SELECT advertiser_id, access_token, refresh_token, token_expires_at FROM marketing_accounts WHERE status = 1 ORDER BY updated_at DESC LIMIT 1');
     if (!accounts || accounts.length === 0) {
-      // Fallback to qc_accounts if no marketing account
-      const [qcAccounts] = await db.query('SELECT advertiser_id, access_token, refresh_token, token_expires_at FROM qc_accounts WHERE status = 1 LIMIT 1');
-      if (!qcAccounts || qcAccounts.length === 0) { logger.warn('[CommentSync] 无可用账户'); return null; }
-      return { advertiserId: qcAccounts[0].advertiser_id, accessToken: qcAccounts[0].access_token };
+      logger.warn('[CommentSync] 无可用账户');
+      return null;
     }
     const account = accounts[0];
     let accessToken = account.access_token;
-    // Check expiration - refresh if expires within 2 hours
     if (account.token_expires_at && dayjs(account.token_expires_at).subtract(2, 'hour').isBefore(dayjs())) {
       logger.info('[CommentSync] 巨量营销Token即将过期，自动刷新');
       accessToken = await refreshMarketingToken(account);
@@ -233,7 +244,7 @@ async function classifyComment(commentText) {
   try {
     const apiKey = process.env.OPENAI_API_KEY;
     const baseUrl = process.env.OPENAI_BASE_URL || 'https://api.aiclaude.xyz/v1';
-    const model = process.env.OPENAI_MODEL || 'gpt-4o';
+    const model = process.env.OPENAI_MODEL || 'claude-sonnet-4-6';
 
     const resp = await axios.post(`${baseUrl}/chat/completions`, {
       model,
@@ -270,7 +281,7 @@ async function generateReply(commentText, category, replyStyle) {
   try {
     const apiKey = process.env.OPENAI_API_KEY;
     const baseUrl = process.env.OPENAI_BASE_URL || 'https://api.aiclaude.xyz/v1';
-    const model = process.env.OPENAI_MODEL || 'gpt-4o';
+    const model = process.env.OPENAI_MODEL || 'claude-sonnet-4-6';
 
     // ===== 1. 从系统"产品人群画像"自动读取真实数据 =====
     let audienceContext = '';
@@ -348,23 +359,40 @@ ${kb.reply_rules || ''}`;
     }
 
     // ===== 3. 构建最终Prompt =====
-    const systemPrompt = `你是品牌的抖音运营助手，负责回复视频下的用户评论。
+    const systemPrompt = `你是雪玲妃品牌的抖音评论回复助手。
+
 ${audienceContext}
 ${productContext}
 
-【回复要求】
-1. 根据用户评论内容，结合产品功效和卖点，给出有针对性的回复
-2. 了解我们的用户画像，用她们喜欢的语气说话（年轻女性为主，注重性价比）
-3. 不超过50字，自然亲切不生硬，像真人而非机器人
-4. 不包含联系方式、导流信息、外部链接
-5. 不使用emoji和表情符号
-6. 当前评论分类：${category}，回复风格：${replyStyle}
-7. 好评→感谢+强调产品核心卖点，让其他用户也想买
-8. 差评→先共情道歉+给解决方案（如联系客服换货）
-9. 咨询→专业解答产品功效/成分/适用肤质，引导下单
-10. 疑问→耐心回答，消除顾虑
+【严格禁止的违规词——绝对不能出现在回复中】
+以下词汇属于化妆品广告违规用语，一旦出现会导致视频被封：
+- 功效夸大词：美白、祛斑、祛痘、抗衰老、抗皱、去皱、紧致、焕肤、嫩肤、淡斑、除螨、杀菌、消炎、脱敏、生发、防脱
+- 绝对化用语：最好、第一、100%、永久、根治、彻底、完全消除、立竿见影、一次见效、神器、万能
+- 医疗用语：治疗、药用、医学级、临床验证、修复细胞、皮肤屏障修复
+- 虚假承诺：无效退款、保证有效、7天见效、立即见效
 
-只返回回复内容，不要任何前缀、引号或解释。`;
+【可以使用的安全表达】
+- 温和清洁、清爽不紧绷、补水保湿、控油清爽、氨基酸配方
+- 性价比高、大容量、一瓶抵几支、好用不贵
+- 适合敏感肌使用、成分温和、清洁力到位
+- 回购率高、很多人都在用、口碑好
+
+【回复规则——严格遵守】
+1. 回复必须与评论内容直接相关，不要答非所问
+2. 回复必须基于产品实际功效，不能夸大虚假
+3. 不超过20字，简短自然像真人说话
+4. 不使用emoji、表情符号
+5. 不包含联系方式、导流信息
+6. 每条评论只生成一条回复
+7. 当前评论分类：${category}
+
+【按分类回复策略】
+- 好评→简短感谢+产品实际卖点（如：谢谢认可，500g大容量很耐用）
+- 咨询→回答具体问题（如问控油：氨基酸配方，清爽不紧绷，控油效果好）
+- 差评→道歉+建议联系客服处理
+- 疑问→基于产品实际情况回答，不确定的不要乱说
+
+只返回回复文字，不要引号、前缀或解释。`;
 
     const resp = await axios.post(`${baseUrl}/chat/completions`, {
       model,
@@ -573,13 +601,35 @@ async function checkRateLimit(accountLabel) {
  */
 async function runAutoReply() {
   try {
-    // 检查是否启用AI自动回复
+    // 获取Token（拉取评论始终需要）
+    const tokenInfo = await getAccessToken();
+    if (!tokenInfo) {
+      logger.error('[CommentSync] 无法获取Token，终止');
+      return { replied: 0, pulled: 0, error: 'Token获取失败' };
+    }
+    const { advertiserId, accessToken } = tokenInfo;
+
+    // 【始终执行】遍历所有账号拉取评论
+    let totalPulled = 0;
+    const [allAccounts] = await db.query('SELECT advertiser_id, access_token FROM marketing_accounts WHERE status=1');
+    for (const acc of (allAccounts || [])) {
+      try {
+        const pullToken = accessToken || acc.access_token;
+        const count = await pullComments(acc.advertiser_id, pullToken);
+        totalPulled += count;
+      } catch (e) {
+        logger.warn(`[CommentSync] 子账号${acc.advertiser_id}拉取失败`, { error: e.message });
+      }
+    }
+    logger.info(`[CommentSync] 共拉取${totalPulled}条新评论(${allAccounts?.length || 0}个账号)`);
+
+    // 检查AI自动回复是否启用
     const [configRows] = await db.query(
       `SELECT enabled, pull_interval_minutes, auto_reply_categories, reply_style FROM ops_ai_reply_config ORDER BY id LIMIT 1`
     );
     if (!configRows || configRows.length === 0 || configRows[0].enabled !== 1) {
-      logger.info('[CommentSync] AI自动回复未启用');
-      return { replied: 0, pulled: 0 };
+      logger.info('[CommentSync] AI自动回复未启用，仅拉取评论');
+      return { replied: 0, pulled: totalPulled };
     }
 
     const config = configRows[0];
@@ -590,27 +640,6 @@ async function runAutoReply() {
         : config.auto_reply_categories || ['positive', 'inquiry', 'question'];
     } catch { autoReplyCategories = ['positive', 'inquiry', 'question']; }
     const replyStyle = config.reply_style || 'friendly';
-
-    // 获取Token（用于回复）
-    const tokenInfo = await getAccessToken();
-    if (!tokenInfo) {
-      logger.error('[CommentSync] 无法获取Token，终止自动回复');
-      return { replied: 0, pulled: 0, error: 'Token获取失败' };
-    }
-    const { advertiserId, accessToken } = tokenInfo;
-
-    // 遍历所有营销子账号拉取评论
-    let totalPulled = 0;
-    const [allAccounts] = await db.query('SELECT advertiser_id, access_token FROM marketing_accounts WHERE status=1');
-    for (const acc of (allAccounts || [])) {
-      try {
-        const count = await pullComments(acc.advertiser_id, acc.access_token);
-        totalPulled += count;
-      } catch (e) {
-        logger.warn(`[CommentSync] 子账号${acc.advertiser_id}拉取失败`, { error: e.message });
-      }
-    }
-    logger.info(`[CommentSync] 共拉取${totalPulled}条新评论(${allAccounts?.length || 0}个账号)`);
 
     // 获取待处理评论
     const [pendingComments] = await db.query(
@@ -625,6 +654,17 @@ async function runAutoReply() {
     let repliedCount = 0;
 
     for (const comment of pendingComments) {
+      // 防重复：检查该评论是否已被回复过（防止runAutoReply和autoReplyOverdue重复处理）
+      const [alreadyReplied] = await db.query(
+        `SELECT id FROM ops_comment_logs WHERE original_comment_id=? AND status='success' LIMIT 1`,
+        [comment.original_comment_id]
+      );
+      if (alreadyReplied && alreadyReplied.length > 0) {
+        await db.query(`UPDATE ops_comment_logs SET status='filtered', fail_reason='已有回复记录' WHERE id=?`, [comment.id]);
+        logger.info(`[CommentSync] 评论 ${comment.id} 已有回复，跳过`);
+        continue;
+      }
+
       // 频率检查
       const withinLimit = await checkRateLimit(advertiserId);
       if (!withinLimit) {
@@ -775,6 +815,16 @@ async function autoReplyOverdue() {
 
     let repliedCount = 0;
     for (const comment of overdue) {
+      // 防重复：检查该评论是否已被回复过
+      const [alreadyReplied] = await db.query(
+        `SELECT id FROM ops_comment_logs WHERE original_comment_id=? AND status='success' LIMIT 1`,
+        [comment.original_comment_id]
+      );
+      if (alreadyReplied && alreadyReplied.length > 0) {
+        await db.query(`UPDATE ops_comment_logs SET status='filtered', fail_reason='已有回复记录' WHERE id=?`, [comment.id]);
+        continue;
+      }
+
       // 频率检查
       const withinLimit = await checkRateLimit(tokenInfo.advertiserId);
       if (!withinLimit) {

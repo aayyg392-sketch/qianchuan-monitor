@@ -1,0 +1,680 @@
+const router = require('express').Router();
+const db = require('../db');
+const auth = require('../middleware/auth');
+const dayjs = require('dayjs');
+
+// 概览数据（全域推广指标：消耗/成交单数/GMV/ROI）
+router.get('/overview', auth(), async (req, res) => {
+  const { period = 'today' } = req.query;
+  const todayDate = dayjs().format('YYYY-MM-DD');
+  const yesterdayDate = dayjs().subtract(1, 'day').format('YYYY-MM-DD');
+  const weekAgo = dayjs().subtract(6, 'day').format('YYYY-MM-DD');
+
+  let startDate, endDate, prevStartDate, prevEndDate;
+  if (period === 'yesterday') {
+    startDate = endDate = yesterdayDate;
+    prevStartDate = prevEndDate = dayjs().subtract(2, 'day').format('YYYY-MM-DD');
+  } else if (period === '7d') {
+    startDate = weekAgo;
+    endDate = todayDate;
+    prevStartDate = dayjs().subtract(13, 'day').format('YYYY-MM-DD');
+    prevEndDate = dayjs().subtract(7, 'day').format('YYYY-MM-DD');
+  } else {
+    startDate = endDate = todayDate;
+    prevStartDate = prevEndDate = yesterdayDate;
+  }
+
+  try {
+    const isRange = startDate !== endDate;
+    const whereCurrent = isRange
+      ? 'stat_date BETWEEN ? AND ?'
+      : 'stat_date=?';
+    const paramsCurrent = isRange ? [startDate, endDate] : [startDate];
+    const wherePrev = prevStartDate !== prevEndDate
+      ? 'stat_date BETWEEN ? AND ?'
+      : 'stat_date=?';
+    const paramsPrev = prevStartDate !== prevEndDate ? [prevStartDate, prevEndDate] : [prevStartDate];
+
+    const [today_data] = await db.query(
+      `SELECT
+        COALESCE(SUM(cost),0) AS cost,
+        COALESCE(SUM(convert_cnt),0) AS orders,
+        COALESCE(SUM(cpm),0) AS gmv,
+        COALESCE(AVG(NULLIF(convert_rate,0)),0) AS avg_roi,
+        COALESCE(AVG(NULLIF(convert_cost,0)),0) AS avg_cpo
+       FROM qc_daily_stats WHERE ${whereCurrent} AND entity_type='account'`, paramsCurrent);
+    const [yest_data] = await db.query(
+      `SELECT COALESCE(SUM(cost),0) AS cost, COALESCE(SUM(convert_cnt),0) AS orders,
+        COALESCE(SUM(cpm),0) AS gmv,
+        COALESCE(AVG(NULLIF(convert_rate,0)),0) AS avg_roi
+       FROM qc_daily_stats WHERE ${wherePrev} AND entity_type='account'`, paramsPrev);
+    const [trend] = await db.query(
+      `SELECT DATE_FORMAT(stat_date, '%Y-%m-%d') AS stat_date,
+        SUM(cost) AS cost,
+        SUM(convert_cnt) AS orders,
+        SUM(cpm) AS gmv,
+        AVG(NULLIF(convert_rate,0)) AS avg_roi
+       FROM qc_daily_stats WHERE stat_date BETWEEN ? AND ? AND entity_type='account'
+       GROUP BY stat_date ORDER BY stat_date`, [weekAgo, todayDate]);
+    const accountDate = period === 'yesterday' ? yesterdayDate : todayDate;
+    const [accounts] = await db.query(
+      `SELECT a.advertiser_id, a.advertiser_name, a.last_sync_at,
+        COALESCE(s.cost,0) AS today_cost,
+        COALESCE(s.convert_cnt,0) AS today_orders,
+        COALESCE(s.cpm,0) AS today_gmv,
+        COALESCE(s.convert_rate,0) AS today_roi,
+        COALESCE(s.convert_cost,0) AS today_cpo
+       FROM qc_accounts a LEFT JOIN qc_daily_stats s
+       ON a.advertiser_id=s.entity_id AND s.stat_date=? AND s.entity_type='account'
+       WHERE a.status=1`, [accountDate]);
+    const prevLabel = period === '7d' ? '上周' : '前日';
+    res.json({ code: 0, data: { today: today_data[0], yesterday: yest_data[0], trend, accounts, prevLabel } });
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
+// 实时统计（TOP广告计划）
+router.get('/realtime', auth(), async (req, res) => {
+  const today = dayjs().format('YYYY-MM-DD');
+  try {
+    const [top_campaigns] = await db.query(
+      `SELECT entity_id, entity_name,
+        cost, convert_cnt AS orders, cpm AS gmv, convert_rate AS roi, convert_cost AS cpo
+       FROM qc_daily_stats WHERE stat_date=? AND entity_type='campaign'
+       ORDER BY cost DESC LIMIT 10`, [today]);
+    res.json({ code: 0, data: { top_creatives: [], top_campaigns } });
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
+// 近7天 各广告计划 消耗/GMV/ROI 趋势
+router.get('/product-trend', auth(), async (req, res) => {
+  const { entityType = 'campaign', advertiserId, topN = 5 } = req.query;
+  const today = dayjs().format('YYYY-MM-DD');
+  const weekAgo = dayjs().subtract(6, 'day').format('YYYY-MM-DD');
+
+  const dates = [];
+  for (let i = 6; i >= 0; i--) {
+    dates.push(dayjs().subtract(i, 'day').format('YYYY-MM-DD'));
+  }
+
+  try {
+    // 素材维度：从 qc_material_stats 表查询
+    if (entityType === 'material') {
+      const [topMaterials] = await db.query(
+        `SELECT material_id AS entity_id, title AS entity_name,
+          SUM(cost) AS total_cost, SUM(pay_order_amount) AS total_gmv, AVG(NULLIF(roi,0)) AS avg_roi
+         FROM qc_material_stats WHERE stat_date BETWEEN ? AND ?
+         GROUP BY material_id, title HAVING total_cost > 0
+         ORDER BY total_cost DESC LIMIT ?`,
+        [weekAgo, today, parseInt(topN)]
+      );
+      if (!topMaterials.length) return res.json({ code: 0, data: { dates, entities: [] } });
+      const matIds = topMaterials.map(m => m.entity_id);
+      const ph = matIds.map(() => '?').join(',');
+      const [dailyMat] = await db.query(
+        `SELECT material_id AS entity_id, DATE_FORMAT(stat_date,'%Y-%m-%d') AS stat_date,
+          COALESCE(cost,0) AS cost, COALESCE(pay_order_amount,0) AS gmv, COALESCE(roi,0) AS roi
+         FROM qc_material_stats WHERE material_id IN (${ph}) AND stat_date BETWEEN ? AND ?
+         ORDER BY material_id, stat_date`,
+        [...matIds, weekAgo, today]
+      );
+      const entities = topMaterials.map(m => {
+        const roi_series = dates.map(d => {
+          const r = dailyMat.find(x => String(x.entity_id)===String(m.entity_id) && x.stat_date===d);
+          return r ? parseFloat(parseFloat(r.roi).toFixed(4)) : null;
+        });
+        const cost_series = dates.map(d => {
+          const r = dailyMat.find(x => String(x.entity_id)===String(m.entity_id) && x.stat_date===d);
+          return r ? parseFloat(parseFloat(r.cost).toFixed(2)) : 0;
+        });
+        const gmv_series = dates.map(d => {
+          const r = dailyMat.find(x => String(x.entity_id)===String(m.entity_id) && x.stat_date===d);
+          return r ? parseFloat(parseFloat(r.gmv).toFixed(2)) : 0;
+        });
+        return {
+          entity_id: m.entity_id, entity_name: m.entity_name || String(m.entity_id),
+          total_cost: parseFloat(parseFloat(m.total_cost).toFixed(2)),
+          total_gmv: parseFloat(parseFloat(m.total_gmv||0).toFixed(2)),
+          avg_roi: parseFloat(parseFloat(m.avg_roi||0).toFixed(4)),
+          roi_series, cost_series, gmv_series
+        };
+      });
+      return res.json({ code: 0, data: { dates, entities } });
+    }
+
+    let topSql = `SELECT entity_id, entity_name,
+      SUM(cost) AS total_cost,
+      SUM(cpm) AS total_gmv,
+      AVG(NULLIF(convert_rate,0)) AS avg_roi
+      FROM qc_daily_stats
+      WHERE stat_date BETWEEN ? AND ? AND entity_type=?`;
+    const topParams = [weekAgo, today, entityType];
+    if (advertiserId) { topSql += ' AND advertiser_id=?'; topParams.push(advertiserId); }
+    topSql += ` GROUP BY entity_id, entity_name HAVING total_cost > 0 ORDER BY total_cost DESC LIMIT ?`;
+    topParams.push(parseInt(topN));
+
+    const [topEntities] = await db.query(topSql, topParams);
+    if (!topEntities.length) return res.json({ code: 0, data: { dates, entities: [] } });
+
+    const entityIds = topEntities.map(e => e.entity_id);
+    const placeholders = entityIds.map(() => '?').join(',');
+    const [dailyData] = await db.query(
+      `SELECT entity_id,
+        DATE_FORMAT(stat_date, '%Y-%m-%d') AS stat_date,
+        COALESCE(cost, 0) AS cost,
+        COALESCE(cpm, 0) AS gmv,
+        COALESCE(convert_rate, 0) AS roi,
+        COALESCE(convert_cnt, 0) AS orders
+       FROM qc_daily_stats
+       WHERE entity_id IN (${placeholders}) AND entity_type=? AND stat_date BETWEEN ? AND ?
+       ORDER BY entity_id, stat_date`,
+      [...entityIds, entityType, weekAgo, today]
+    );
+
+    const entities = topEntities.map(entity => {
+      const roi_series = dates.map(d => {
+        const row = dailyData.find(r => r.entity_id === entity.entity_id && r.stat_date === d);
+        return row ? parseFloat(parseFloat(row.roi).toFixed(4)) : null;
+      });
+      const cost_series = dates.map(d => {
+        const row = dailyData.find(r => r.entity_id === entity.entity_id && r.stat_date === d);
+        return row ? parseFloat(parseFloat(row.cost).toFixed(2)) : 0;
+      });
+      const gmv_series = dates.map(d => {
+        const row = dailyData.find(r => r.entity_id === entity.entity_id && r.stat_date === d);
+        return row ? parseFloat(parseFloat(row.gmv).toFixed(2)) : 0;
+      });
+      return {
+        entity_id: entity.entity_id,
+        entity_name: entity.entity_name || entity.entity_id,
+        total_cost: parseFloat(parseFloat(entity.total_cost).toFixed(2)),
+        total_gmv: parseFloat(parseFloat(entity.total_gmv || 0).toFixed(2)),
+        avg_roi: parseFloat(parseFloat(entity.avg_roi || 0).toFixed(4)),
+        roi_series,
+        cost_series,
+        gmv_series
+      };
+    });
+
+    res.json({ code: 0, data: { dates, entities } });
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
+
+
+// 账户AI质检
+router.post('/account-ai-check/:advertiserId', auth(), async (req, res) => {
+  const { advertiserId } = req.params;
+  try {
+    // 取近7天数据
+    const [rows] = await db.query(
+      `SELECT stat_date, cost, convert_cnt AS orders, cpm AS gmv, convert_rate AS roi, convert_cost AS cpo
+       FROM qc_daily_stats WHERE entity_id=? AND entity_type='account' ORDER BY stat_date DESC LIMIT 7`,
+      [advertiserId]
+    );
+    if (!rows.length) return res.json({ code: 404, msg: '暂无该账户数据' });
+
+    // 取账户名
+    const [accRows] = await db.query('SELECT advertiser_name FROM qc_accounts WHERE advertiser_id=?', [advertiserId]);
+    const accName = accRows.length ? accRows[0].advertiser_name : advertiserId;
+
+    const days = rows.length;
+    const totalCost = rows.reduce((s, r) => s + parseFloat(r.cost || 0), 0);
+    const totalOrders = rows.reduce((s, r) => s + parseInt(r.orders || 0), 0);
+    const totalGmv = rows.reduce((s, r) => s + parseFloat(r.gmv || 0), 0);
+    const avgRoi = rows.reduce((s, r) => s + parseFloat(r.roi || 0), 0) / days;
+    const avgCpo = rows.reduce((s, r) => s + parseFloat(r.cpo || 0), 0) / days;
+
+    // 趋势判断
+    const costTrend = rows.length >= 2 ? parseFloat(rows[0].cost||0) - parseFloat(rows[rows.length-1].cost||0) : 0;
+    const roiTrend = rows.length >= 2 ? parseFloat(rows[0].roi||0) - parseFloat(rows[rows.length-1].roi||0) : 0;
+
+    const prompt = '你是一位专业的巨量千川广告投放分析师。请根据以下账户的全域推广数据，给出综合评分(0-100)和分析。\n\n' +
+      '账户：' + accName + '\n' +
+      '近' + days + '天汇总：\n' +
+      '- 总消耗：' + totalCost.toFixed(2) + '元\n' +
+      '- 总成交：' + totalOrders + '单\n' +
+      '- 总GMV：' + totalGmv.toFixed(2) + '元\n' +
+      '- 平均ROI：' + avgRoi.toFixed(4) + '\n' +
+      '- 平均客单成本：' + avgCpo.toFixed(2) + '元\n' +
+      '- 消耗趋势：' + (costTrend > 0 ? '上升' : costTrend < 0 ? '下降' : '持平') + '\n' +
+      '- ROI趋势：' + (roiTrend > 0 ? '上升' : roiTrend < 0 ? '下降' : '持平') + '\n\n' +
+      '请从以下维度分析：ROI表现、出单能力、成本控制、消耗规模、趋势健康度\n' +
+      '以JSON格式回复：\n' +
+      '{"score":综合评分,"level":"优秀/良好/一般/较差","strengths":["优势1","优势2"],"issues":["不足1","不足2"],"suggestions":["建议1","建议2"],"dimensions":{"roi":{"score":分,"comment":""},"orders":{"score":分,"comment":""},"cost":{"score":分,"comment":""},"scale":{"score":分,"comment":""},"trend":{"score":分,"comment":""}}}\n只返回JSON。';
+
+    let aiResult = null;
+    const openaiKey = process.env.OPENAI_API_KEY;
+    if (openaiKey) {
+      try {
+        const axios = require('axios');
+        const base = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
+        const aiRes = await axios.post(base + '/chat/completions', {
+          model: process.env.OPENAI_MODEL || 'gpt-4',
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.3, max_tokens: 1000
+        }, {
+          headers: { 'Authorization': 'Bearer ' + openaiKey, 'Content-Type': 'application/json' },
+          timeout: 30000
+        });
+        const content = aiRes.data.choices[0].message.content;
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        if (jsonMatch) aiResult = JSON.parse(jsonMatch[0]);
+      } catch (e) {
+        console.warn('[AI] 账户质检OpenAI调用失败:', e.message);
+      }
+    }
+
+    // 规则兜底
+    if (!aiResult) {
+      let score = 50;
+      const issues = [], strengths = [], suggestions = [];
+      if (avgRoi >= 2) { score += 20; strengths.push('ROI表现优秀，投产比高'); }
+      else if (avgRoi >= 1.5) { score += 10; strengths.push('ROI处于较好水平'); }
+      else if (avgRoi < 1) { score -= 15; issues.push('ROI低于1，投放亏损'); suggestions.push('优化素材和投放策略提升ROI'); }
+      if (totalOrders / days >= 50) { score += 10; strengths.push('日均出单量大，转化能力强'); }
+      else if (totalOrders / days < 10) { score -= 10; issues.push('日均出单偏少'); suggestions.push('尝试扩大投放预算或优化素材'); }
+      if (avgCpo < 20) { score += 10; strengths.push('客单成本控制优秀'); }
+      else if (avgCpo > 50) { score -= 10; issues.push('客单成本偏高'); suggestions.push('优化定向人群降低转化成本'); }
+      if (costTrend > 0 && roiTrend > 0) { score += 5; strengths.push('消耗和ROI同步增长，势头良好'); }
+      if (costTrend > 0 && roiTrend < 0) { issues.push('消耗增长但ROI下降，注意效率'); suggestions.push('关注素材衰退情况，及时更换低效素材'); }
+      score = Math.max(0, Math.min(100, score));
+      const level = score >= 80 ? '优秀' : score >= 60 ? '良好' : score >= 40 ? '一般' : '较差';
+      if (!strengths.length) strengths.push('数据量正常');
+      if (!issues.length) issues.push('暂无明显问题');
+      if (!suggestions.length) suggestions.push('保持当前投放策略');
+      aiResult = { score, level, strengths, issues, suggestions, dimensions: {
+        roi: { score: avgRoi >= 2 ? 90 : avgRoi >= 1.5 ? 70 : avgRoi >= 1 ? 50 : 30, comment: 'ROI ' + avgRoi.toFixed(2) },
+        orders: { score: totalOrders/days >= 50 ? 85 : totalOrders/days >= 20 ? 65 : 45, comment: '日均' + (totalOrders/days).toFixed(0) + '单' },
+        cost: { score: avgCpo < 20 ? 85 : avgCpo < 35 ? 65 : 45, comment: '均单成本' + avgCpo.toFixed(0) + '元' },
+        scale: { score: totalCost/days >= 5000 ? 80 : totalCost/days >= 1000 ? 60 : 40, comment: '日均消耗' + (totalCost/days).toFixed(0) + '元' },
+        trend: { score: roiTrend >= 0 ? 70 : 40, comment: roiTrend >= 0 ? 'ROI趋势稳定' : 'ROI下降中' }
+      }};
+    }
+
+    res.json({ code: 0, data: aiResult });
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
+
+// 潜力素材推荐（视频维度聚合，多维度评分筛选放大潜力素材）
+router.get('/potential-materials', auth(), async (req, res) => {
+  const today = dayjs().format('YYYY-MM-DD');
+  const weekAgo = dayjs().subtract(6, 'day').format('YYYY-MM-DD');
+  try {
+    // 按视频名称(title)聚合，同一视频不同material_id合并计算
+    const [rows] = await db.query(
+      `SELECT title AS video_name,
+        GROUP_CONCAT(DISTINCT material_id) AS material_ids,
+        COUNT(DISTINCT material_id) AS material_count,
+        SUM(cost) AS total_cost,
+        SUM(pay_order_count) AS total_orders,
+        SUM(pay_order_amount) AS total_gmv,
+        CASE WHEN SUM(cost)>0 THEN SUM(pay_order_amount)/SUM(cost) ELSE 0 END AS roi,
+        CASE WHEN SUM(cost)>0 THEN SUM(pay_order_count)*1000/SUM(cost) ELSE 0 END AS orders_per_1k,
+        CASE WHEN SUM(pay_order_count)>0 THEN SUM(pay_order_amount)/SUM(pay_order_count) ELSE 0 END AS avg_order_value,
+        COUNT(DISTINCT stat_date) AS active_days,
+        MAX(ai_score) AS ai_score,
+        MAX(CASE WHEN cover_url IS NOT NULL AND cover_url != "" THEN cover_url ELSE NULL END) AS cover_url,
+        MAX(CASE WHEN video_url IS NOT NULL AND video_url != "" THEN video_url ELSE NULL END) AS video_url,
+        SUM(product_show_count) AS total_show_count,
+        SUM(product_click_count) AS total_click_count,
+        CASE WHEN SUM(product_show_count)>0 THEN SUM(product_click_count)/SUM(product_show_count) ELSE 0 END AS avg_ctr,
+        AVG(NULLIF(product_convert_rate,0)) AS avg_convert_rate,
+        SUM(video_play_count) AS total_play_count,
+        AVG(NULLIF(video_finish_rate,0)) AS avg_finish_rate
+       FROM qc_material_stats
+       WHERE stat_date BETWEEN ? AND ? AND title IS NOT NULL AND title != ''
+       GROUP BY title
+       HAVING total_cost >= 100 AND active_days >= 3`,
+      [weekAgo, today]
+    );
+
+    if (!rows.length) return res.json({ code: 0, data: [] });
+
+    const maxCost = Math.max(...rows.map(r => parseFloat(r.total_cost)));
+    const avgOrdersPer1k = rows.reduce((s, r) => s + parseFloat(r.orders_per_1k || 0), 0) / rows.length;
+
+    const scored = rows.map(r => {
+      const roi = parseFloat(r.roi) || 0;
+      const ordersPer1k = parseFloat(r.orders_per_1k) || 0;
+      const costRatio = maxCost > 0 ? parseFloat(r.total_cost) / maxCost : 1;
+      const activeDays = parseInt(r.active_days) || 0;
+
+      let roiScore = roi >= 3 ? 100 : roi >= 2 ? 80 : roi >= 1.5 ? 60 : roi >= 1 ? 40 : 20;
+      let effScore = avgOrdersPer1k > 0 ? Math.min(100, (ordersPer1k / avgOrdersPer1k) * 60) : 50;
+      let spaceScore = costRatio <= 0.1 ? 100 : costRatio <= 0.3 ? 80 : costRatio <= 0.5 ? 60 : costRatio <= 0.8 ? 40 : 20;
+      let stabilityScore = activeDays >= 5 ? 100 : activeDays >= 3 ? 70 : 40;
+
+      const potential_score = Math.round(roiScore * 0.3 + effScore * 0.3 + spaceScore * 0.2 + stabilityScore * 0.2);
+      const potential_level = potential_score >= 75 ? '高潜力' : potential_score >= 55 ? '中潜力' : '待观察';
+
+      const reasons = [];
+      if (roi >= 2) reasons.push('ROI ' + roi.toFixed(2) + ' 表现优秀');
+      else if (roi >= 1.5) reasons.push('ROI ' + roi.toFixed(2) + ' 良好');
+      if (ordersPer1k > avgOrdersPer1k * 1.2) reasons.push('千元出单' + ordersPer1k.toFixed(0) + '单 效率突出');
+      if (costRatio <= 0.3) reasons.push('消耗仅占头部' + (costRatio * 100).toFixed(0) + '% 放大空间大');
+      if (activeDays >= 5) reasons.push('近7天' + activeDays + '天有数据 表现稳定');
+      if (parseInt(r.material_count) > 1) reasons.push('已投' + r.material_count + '条计划 可继续扩展');
+      if (!reasons.length) reasons.push('综合表现均衡');
+
+      return {
+        video_name: r.video_name,
+        material_count: parseInt(r.material_count) || 1,
+        total_cost: parseFloat(parseFloat(r.total_cost).toFixed(2)),
+        total_orders: parseInt(r.total_orders) || 0,
+        total_gmv: parseFloat(parseFloat(r.total_gmv).toFixed(2)),
+        roi: parseFloat(roi.toFixed(2)),
+        orders_per_1k: parseFloat(ordersPer1k.toFixed(1)),
+        avg_order_value: parseFloat(parseFloat(r.avg_order_value || 0).toFixed(2)),
+        active_days: activeDays,
+        ai_score: parseInt(r.ai_score) || null,
+        potential_score,
+        potential_level,
+        potential_reasons: reasons,
+        total_show_count: parseInt(r.total_show_count) || 0,
+        total_click_count: parseInt(r.total_click_count) || 0,
+        avg_ctr: parseFloat(parseFloat(r.avg_ctr || 0).toFixed(4)),
+        avg_convert_rate: parseFloat(parseFloat(r.avg_convert_rate || 0).toFixed(4)),
+        total_play_count: parseInt(r.total_play_count) || 0,
+        avg_finish_rate: parseFloat(parseFloat(r.avg_finish_rate || 0).toFixed(4)),
+        cover_url: r.cover_url || "",
+        video_url: r.video_url || ""
+      };
+    });
+
+    scored.sort((a, b) => b.potential_score - a.potential_score || b.roi - a.roi);
+    res.json({ code: 0, data: scored.slice(0, 10) });
+  } catch (e) {
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// 新增：视频素材趋势（CTR/转化率/完播率 按账户类型区分）
+router.get("/material-trend", auth(), async (req, res) => {
+  const { accountType = "product" } = req.query;
+  const today = dayjs().format("YYYY-MM-DD");
+  const weekAgo = dayjs().subtract(6, "day").format("YYYY-MM-DD");
+
+  const dates = [];
+  for (let i = 6; i >= 0; i--) {
+    dates.push(dayjs().subtract(i, "day").format("YYYY-MM-DD"));
+  }
+
+  try {
+    // 直播间账户：从 qc_daily_stats 取消耗/ROI/成交趋势（无素材维度CTR数据）
+    if (accountType === "live") {
+      const [rows] = await db.query(
+        `SELECT DATE_FORMAT(ds.stat_date, '%Y-%m-%d') AS stat_date,
+          SUM(ds.cost) AS total_cost,
+          SUM(ds.convert_cnt) AS total_orders,
+          SUM(ds.cpm) AS total_gmv,
+          AVG(NULLIF(ds.convert_rate,0)) AS avg_roi
+         FROM qc_daily_stats ds
+         JOIN qc_accounts a ON ds.advertiser_id = a.advertiser_id
+         WHERE ds.stat_date BETWEEN ? AND ? AND a.account_type = 'live' AND ds.entity_type = 'account'
+         GROUP BY ds.stat_date
+         ORDER BY ds.stat_date`,
+        [weekAgo, today]
+      );
+
+      const cost_series = dates.map(d => {
+        const r = rows.find(x => x.stat_date === d);
+        return r ? parseFloat(parseFloat(r.total_cost || 0).toFixed(2)) : 0;
+      });
+      const roi_series = dates.map(d => {
+        const r = rows.find(x => x.stat_date === d);
+        return r ? parseFloat(parseFloat(r.avg_roi || 0).toFixed(4)) : null;
+      });
+      const orders_series = dates.map(d => {
+        const r = rows.find(x => x.stat_date === d);
+        return r ? parseInt(r.total_orders || 0) : 0;
+      });
+      const gmv_series = dates.map(d => {
+        const r = rows.find(x => x.stat_date === d);
+        return r ? parseFloat(parseFloat(r.total_gmv || 0).toFixed(2)) : 0;
+      });
+      // 千元出单数 = orders * 1000 / cost
+      const orders_per_1k_series = dates.map(d => {
+        const r = rows.find(x => x.stat_date === d);
+        if (!r) return null;
+        const cost = parseFloat(r.total_cost || 0);
+        const orders = parseInt(r.total_orders || 0);
+        return cost > 0 ? parseFloat((orders * 1000 / cost).toFixed(2)) : null;
+      });
+      // 客单价 = gmv / orders
+      const avg_order_value_series = dates.map(d => {
+        const r = rows.find(x => x.stat_date === d);
+        if (!r) return null;
+        const gmv = parseFloat(r.total_gmv || 0);
+        const orders = parseInt(r.total_orders || 0);
+        return orders > 0 ? parseFloat((gmv / orders).toFixed(2)) : null;
+      });
+
+      const totalCost = rows.reduce((s, r) => s + parseFloat(r.total_cost || 0), 0);
+      const totalOrders = rows.reduce((s, r) => s + parseInt(r.total_orders || 0), 0);
+      const totalGmv = rows.reduce((s, r) => s + parseFloat(r.total_gmv || 0), 0);
+      const validRoi = rows.filter(r => parseFloat(r.avg_roi) > 0);
+      const avgRoi = validRoi.length > 0 ? validRoi.reduce((s, r) => s + parseFloat(r.avg_roi), 0) / validRoi.length : 0;
+      const avgOrdersPerK = totalCost > 0 ? parseFloat((totalOrders * 1000 / totalCost).toFixed(2)) : 0;
+      const avgOrderValue = totalOrders > 0 ? parseFloat((totalGmv / totalOrders).toFixed(2)) : 0;
+
+      return res.json({
+        code: 0,
+        data: {
+          dates,
+          accountType: "live",
+          dataMode: "performance",
+          cost_series,
+          roi_series,
+          orders_series,
+          gmv_series,
+          orders_per_1k_series,
+          avg_order_value_series,
+          summary: {
+            total_cost: parseFloat(totalCost.toFixed(2)),
+            total_orders: totalOrders,
+            total_gmv: parseFloat(totalGmv.toFixed(2)),
+            avg_roi: parseFloat(avgRoi.toFixed(4)),
+            avg_orders_per_1k: avgOrdersPerK,
+            avg_order_value: avgOrderValue
+          }
+        }
+      });
+    }
+    // 按日期聚合该类型账户下所有素材的 CTR/转化率/完播率
+    const [rows] = await db.query(
+      `SELECT DATE_FORMAT(ms.stat_date, '%Y-%m-%d') AS stat_date,
+        AVG(NULLIF(ms.product_ctr,0)) AS avg_ctr,
+        AVG(NULLIF(ms.product_convert_rate,0)) AS avg_convert_rate,
+        AVG(NULLIF(ms.video_finish_rate,0)) AS avg_finish_rate,
+        SUM(ms.product_show_count) AS total_show,
+        SUM(ms.product_click_count) AS total_click,
+        SUM(ms.video_play_count) AS total_play,
+        SUM(ms.cost) AS total_cost,
+        COUNT(DISTINCT ms.material_id) AS material_count
+       FROM qc_material_stats ms
+       JOIN qc_accounts a ON ms.advertiser_id = a.advertiser_id
+       WHERE ms.stat_date BETWEEN ? AND ? AND a.account_type = ?
+       GROUP BY ms.stat_date
+       ORDER BY ms.stat_date`,
+      [weekAgo, today, accountType]
+    );
+
+    // 构建按日期填充的时间序列
+    const ctr_series = dates.map(d => {
+      const r = rows.find(x => x.stat_date === d);
+      return r ? parseFloat(parseFloat(r.avg_ctr || 0).toFixed(6)) : null;
+    });
+    const convert_series = dates.map(d => {
+      const r = rows.find(x => x.stat_date === d);
+      return r ? parseFloat(parseFloat(r.avg_convert_rate || 0).toFixed(6)) : null;
+    });
+    const finish_series = dates.map(d => {
+      const r = rows.find(x => x.stat_date === d);
+      return r ? parseFloat(parseFloat(r.avg_finish_rate || 0).toFixed(6)) : null;
+    });
+    const show_series = dates.map(d => {
+      const r = rows.find(x => x.stat_date === d);
+      return r ? parseInt(r.total_show || 0) : 0;
+    });
+    const click_series = dates.map(d => {
+      const r = rows.find(x => x.stat_date === d);
+      return r ? parseInt(r.total_click || 0) : 0;
+    });
+    const play_series = dates.map(d => {
+      const r = rows.find(x => x.stat_date === d);
+      return r ? parseInt(r.total_play || 0) : 0;
+    });
+    const cost_series = dates.map(d => {
+      const r = rows.find(x => x.stat_date === d);
+      return r ? parseFloat(parseFloat(r.total_cost || 0).toFixed(2)) : 0;
+    });
+
+    // 汇总数据
+    const totalShow = rows.reduce((s, r) => s + parseInt(r.total_show || 0), 0);
+    const totalClick = rows.reduce((s, r) => s + parseInt(r.total_click || 0), 0);
+    const totalPlay = rows.reduce((s, r) => s + parseInt(r.total_play || 0), 0);
+    const totalCost = rows.reduce((s, r) => s + parseFloat(r.total_cost || 0), 0);
+    const validCtr = rows.filter(r => parseFloat(r.avg_ctr) > 0);
+    const avgCtr = validCtr.length > 0 ? validCtr.reduce((s, r) => s + parseFloat(r.avg_ctr), 0) / validCtr.length : 0;
+    const validConvert = rows.filter(r => parseFloat(r.avg_convert_rate) > 0);
+    const avgConvert = validConvert.length > 0 ? validConvert.reduce((s, r) => s + parseFloat(r.avg_convert_rate), 0) / validConvert.length : 0;
+    const validFinish = rows.filter(r => parseFloat(r.avg_finish_rate) > 0);
+    const avgFinish = validFinish.length > 0 ? validFinish.reduce((s, r) => s + parseFloat(r.avg_finish_rate), 0) / validFinish.length : 0;
+
+    res.json({
+      code: 0,
+      data: {
+        dates,
+        accountType,
+        ctr_series,
+        convert_series,
+        finish_series,
+        show_series,
+        click_series,
+        play_series,
+        cost_series,
+        summary: {
+          total_show: totalShow,
+          total_click: totalClick,
+          total_play: totalPlay,
+          total_cost: parseFloat(totalCost.toFixed(2)),
+          avg_ctr: parseFloat(avgCtr.toFixed(6)),
+          avg_convert_rate: parseFloat(avgConvert.toFixed(6)),
+          avg_finish_rate: parseFloat(avgFinish.toFixed(6))
+        }
+      }
+    });
+  } catch (e) {
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+
+// AI推广执行意见
+router.post('/material-advice', auth(), async (req, res) => {
+  const { material } = req.body;
+  if (!material) return res.json({ code: 400, msg: '缺少素材数据' });
+
+  const openaiKey = process.env.OPENAI_API_KEY;
+  if (!openaiKey) return res.json({ code: 500, msg: 'AI服务未配置' });
+
+  try {
+    const axios = require('axios');
+    const base = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
+    const model = process.env.OPENAI_MODEL || 'gpt-4';
+
+    const ctrPct = ((material.avg_ctr || 0) * 100).toFixed(2);
+    const cvtPct = ((material.avg_convert_rate || 0) * 100).toFixed(2);
+    const finPct = ((material.avg_finish_rate || 0) * 100).toFixed(2);
+
+    const prompt = `你是一位资深的巨量千川电商广告优化师，擅长洁面护肤类目投放。请根据以下素材数据，给出具体可执行的推广优化意见。
+
+素材名称：${material.video_name}
+近7天数据：
+- 消耗：${material.total_cost}元
+- ROI：${material.roi}
+- 成交：${material.total_orders}单
+- GMV：${material.total_gmv}元
+- 千元出单：${material.orders_per_1k}单
+- 客单价：${material.avg_order_value}元
+- 展示量：${material.total_show_count}
+- 点击率：${ctrPct}%
+- 转化率：${cvtPct}%
+- 完播率：${finPct}%
+- 潜力评分：${material.potential_score}分
+- 潜力级别：${material.potential_level}
+- 投放计划数：${material.material_count}
+
+请返回JSON格式（不要markdown标记）：
+{
+  "verdict": "追投/维持/缩量/暂停",
+  "confidence": 85,
+  "budget_action": "具体预算调整建议",
+  "bid_action": "出价调整建议",
+  "target_action": "定向人群优化建议",
+  "creative_action": "创意素材优化建议，是否需要翻拍或混剪",
+  "comment_action": "评论区维护建议，如置顶话术、回复策略、引导互动等",
+  "schedule_action": "投放时段优化建议",
+  "risk_alert": "风险提醒",
+  "expected_result": "预计执行后效果提升预估"
+}`;
+
+    const aiRes = await axios.post(base + '/chat/completions', {
+      model,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.7,
+      max_tokens: 1000
+    }, {
+      headers: { 'Authorization': 'Bearer ' + openaiKey, 'Content-Type': 'application/json' },
+      timeout: 60000
+    });
+
+    let content = aiRes.data.choices[0].message.content.trim();
+    content = content.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+    content = content.replace(/,\s*([\]}])/g, '$1');
+
+    let advice;
+    try {
+      advice = JSON.parse(content);
+    } catch (e) {
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        advice = JSON.parse(jsonMatch[0].replace(/,\s*([\]}])/g, '$1'));
+      } else {
+        throw new Error('AI返回格式异常');
+      }
+    }
+
+    res.json({ code: 0, data: advice });
+  } catch (e) {
+    const logger = require('../logger');
+    logger.error('[MaterialAdvice] AI分析失败', { error: e.message });
+
+    // 降级：基于规则生成建议
+    const roi = parseFloat(material.roi) || 0;
+    const cost = parseFloat(material.total_cost) || 0;
+    const orders = parseInt(material.total_orders) || 0;
+    const ctr = parseFloat(material.avg_ctr) || 0;
+
+    let verdict = '维持';
+    let budget_action = '保持当前预算不变';
+    if (roi >= 2.5 && orders >= 10) { verdict = '追投'; budget_action = '建议追加预算50-100%，扩大投放规模'; }
+    else if (roi >= 1.5) { verdict = '维持'; budget_action = '保持当前预算，持续观察'; }
+    else if (roi < 1) { verdict = '缩量'; budget_action = '建议降低预算30-50%，控制风险'; }
+
+    res.json({ code: 0, data: {
+      verdict,
+      confidence: 60,
+      budget_action,
+      bid_action: roi >= 2 ? '可适当提高出价5-10%抢量' : '保持当前出价或小幅降低',
+      target_action: ctr < 0.02 ? '建议收窄定向，提升点击精准度' : '当前定向效果良好，可尝试相似人群拓展',
+      creative_action: orders >= 20 ? '素材表现优秀，建议基于此素材翻拍2-3条变体测试' : '建议优化前3秒钩子，提升完播率',
+      comment_action: orders >= 10 ? '置顶好评，积极回复用户咨询，引导下单' : '增加真实使用反馈评论，提升信任感',
+      schedule_action: '重点投放18:00-23:00高峰时段',
+      risk_alert: cost > 2000 && roi < 1.5 ? '消耗较高但ROI偏低，注意控制亏损风险' : '暂无明显风险',
+      expected_result: verdict === '追投' ? '预计日消耗可提升50%以上，ROI保持稳定' : '预计效果保持平稳'
+    }});
+  }
+});
+module.exports = router;

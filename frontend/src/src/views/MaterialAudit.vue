@@ -1,0 +1,832 @@
+<template>
+  <div class="audit-page">
+    <!-- 顶部导航 -->
+    <div class="page-header">
+      <h2 class="page-title">素材审核</h2>
+      <div class="header-actions">
+        <div class="date-nav">
+          <button class="date-btn" @click="changeDate(-1)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <span class="date-display">{{ displayDate }}</span>
+          <button class="date-btn" @click="changeDate(1)" :disabled="isToday">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 6 15 12 9 18"/></svg>
+          </button>
+        </div>
+        <button class="run-btn" @click="handleRun" :disabled="running">
+          <span v-if="running" class="btn-spinner"></span>
+          {{ running ? '审核中...' : '手动审核' }}
+        </button>
+      </div>
+    </div>
+
+    <!-- 统计卡片 -->
+    <div class="stats-bar" v-if="report">
+      <div class="stat-item">
+        <div class="stat-label">审核数量</div>
+        <div class="stat-value primary">{{ report.total_audited || 0 }}</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">平均评分</div>
+        <div class="stat-value" :class="avgScoreClass">{{ formatScore(report.avg_score) }}</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">问题素材</div>
+        <div class="stat-value warn">{{ report.issue_count || 0 }}</div>
+      </div>
+    </div>
+
+    <!-- AI日报卡片 -->
+    <div class="report-card" v-if="report && report.report_content">
+      <div class="report-header" @click="reportExpanded = !reportExpanded">
+        <div class="report-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#722ED1" stroke-width="2">
+            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+          </svg>
+          AI 日报总结
+        </div>
+        <span class="expand-icon">{{ reportExpanded ? '收起' : '展开' }}</span>
+      </div>
+      <div class="report-body" v-if="reportExpanded">
+        <div class="report-text">{{ report.report_content }}</div>
+      </div>
+    </div>
+
+    <!-- 评分维度说明 -->
+    <div class="dimensions-card">
+      <div class="dim-title">AI评分维度（满分100分）</div>
+      <div class="dim-grid">
+        <div class="dim-item"><span class="dim-emoji">💡</span><span class="dim-name">创意新颖度</span><span class="dim-max">20分</span></div>
+        <div class="dim-item"><span class="dim-emoji">🎬</span><span class="dim-name">画面吸引力</span><span class="dim-max">20分</span></div>
+        <div class="dim-item"><span class="dim-emoji">👥</span><span class="dim-name">人群匹配度</span><span class="dim-max">20分</span></div>
+        <div class="dim-item"><span class="dim-emoji">🔀</span><span class="dim-name">差异化程度</span><span class="dim-max">20分</span></div>
+        <div class="dim-item"><span class="dim-emoji">🚀</span><span class="dim-name">消耗潜力</span><span class="dim-max">20分</span></div>
+      </div>
+    </div>
+
+    <!-- 加载状态 -->
+    <div class="loading-state" v-if="loading"><a-spin size="large" /></div>
+
+    <!-- 空状态 -->
+    <div class="empty-state" v-if="!loading && materials.length === 0">
+      <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="#BFBFBF" stroke-width="1">
+        <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/>
+        <rect x="9" y="3" width="6" height="4" rx="1"/>
+      </svg>
+      <p>暂无审核数据</p>
+      <p class="empty-hint">请点击"手动审核"触发AI素材审核</p>
+    </div>
+
+    <!-- 素材列表 -->
+    <div class="material-list" v-if="!loading && materials.length > 0">
+      <div class="list-info">共 {{ materials.length }} 条，显示 {{ pagedMaterials.length }} 条（第{{ currentPage }}页）</div>
+      <div class="audit-card" v-for="item in pagedMaterials" :key="item.material_id">
+        <!-- 顶部：封面 + 标题（可点击播放） -->
+        <div class="card-top">
+          <div class="card-cover" @click="openVideo(item)">
+            <img v-if="item.cover_url" :src="item.cover_url" :alt="item.title" />
+            <div v-else class="cover-fallback">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.6)" stroke-width="1.5">
+                <polygon points="5 3 19 12 5 21 5 3"/>
+              </svg>
+            </div>
+            <div class="cover-play-icon">▶</div>
+          </div>
+          <div class="card-info">
+            <div class="card-title clickable" @click="openVideo(item)">
+              {{ item.title || '未命名素材' }}
+              <svg class="link-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            </div>
+            <div class="card-date">上线时间：{{ item.created_at ? formatDateTime(item.created_at) : (item.stat_date || '-') }}</div>
+          </div>
+        </div>
+
+        <!-- 数据指标行 -->
+        <div class="metrics-row">
+          <span class="metric-tag">消耗 ¥{{ formatCost(item.material_data?.cost) }}</span>
+          <span class="metric-tag">CTR {{ formatPct(item.material_data?.product_ctr) }}</span>
+          <span class="metric-tag">ROI {{ formatRoi(item.material_data?.roi) }}</span>
+          <span class="metric-tag">3s留存 {{ formatPct(item.material_data?.play_duration_3s_rate) }}</span>
+        </div>
+
+        <!-- 评分区域 -->
+        <div class="score-section">
+          <div class="score-badge" :class="getScoreBadgeClass(item.score)">
+            {{ Math.round(item.score || 0) }}
+          </div>
+          <div class="score-bars">
+            <div class="bar-row" v-for="dim in scoreDimensions" :key="dim.key">
+              <span class="bar-label">{{ dim.label }}</span>
+              <div class="bar-track">
+                <div class="bar-fill" :style="getBarStyle(item.score_detail?.[dim.key])" :class="getBarClass(item.score_detail?.[dim.key])"></div>
+              </div>
+              <span class="bar-value">{{ item.score_detail?.[dim.key] ?? '-' }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 问题标签 -->
+        <div class="issues-row" v-if="item.issues && item.issues.length">
+          <span
+            class="issue-tag"
+            v-for="(issue, idx) in item.issues"
+            :key="idx"
+            :class="getIssueClass(issue)"
+          >{{ getIssueText(issue) }}</span>
+        </div>
+
+        <!-- 画面分析 -->
+        <div class="visual-box" v-if="item.visual_analysis">
+          <div class="visual-label">AI画面分析</div>
+          <div class="visual-text">{{ item.visual_analysis }}</div>
+        </div>
+
+        <!-- 建议 -->
+        <div class="suggestion-box" v-if="item.suggestion">
+          <div class="suggestion-text">{{ item.suggestion }}</div>
+        </div>
+      </div>
+
+      <!-- 分页 -->
+      <div class="pagination" v-if="totalPages > 1">
+        <button class="page-btn" :disabled="currentPage <= 1" @click="currentPage--">上一页</button>
+        <span class="page-info">{{ currentPage }} / {{ totalPages }}</span>
+        <button class="page-btn" :disabled="currentPage >= totalPages" @click="currentPage++">下一页</button>
+      </div>
+    </div>
+
+    <!-- 视频播放弹窗 -->
+    <div class="video-modal" v-if="videoVisible" @click.self="videoVisible = false">
+      <div class="video-modal-inner">
+        <div class="video-modal-header">
+          <span class="video-modal-title">{{ videoTitle }}</span>
+          <button class="video-modal-close" @click="videoVisible = false">✕</button>
+        </div>
+        <video :src="videoSrc" controls autoplay class="video-modal-player"></video>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { ref, computed, onMounted } from 'vue'
+import { message } from 'ant-design-vue'
+import request from '../utils/request'
+
+const currentDate = ref(formatDateStr(new Date()))
+const loading = ref(false)
+const running = ref(false)
+const materials = ref([])
+const report = ref(null)
+const reportExpanded = ref(false)
+const currentPage = ref(1)
+const pageSize = 30
+const videoVisible = ref(false)
+const videoSrc = ref('')
+const videoTitle = ref('')
+
+const totalPages = computed(() => Math.ceil(materials.value.length / pageSize) || 1)
+const pagedMaterials = computed(() => {
+  const start = (currentPage.value - 1) * pageSize
+  return materials.value.slice(start, start + pageSize)
+})
+
+const scoreDimensions = [
+  { key: 'creativity', label: '创意' },
+  { key: 'quality', label: '质量' },
+  { key: 'audience_fit', label: '受众' },
+  { key: 'differentiation', label: '差异' },
+  { key: 'potential', label: '潜力' },
+]
+
+const displayDate = computed(() => {
+  const d = currentDate.value
+  const parts = d.split('-')
+  return `${parts[1]}月${parts[2]}日`
+})
+
+const isToday = computed(() => {
+  return currentDate.value === formatDateStr(new Date())
+})
+
+const avgScoreClass = computed(() => {
+  const s = parseFloat(report.value?.avg_score || 0)
+  if (s >= 80) return 'green'
+  if (s >= 60) return 'blue'
+  if (s >= 40) return 'orange'
+  return 'red'
+})
+
+function formatDateStr(date) {
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+
+function changeDate(offset) {
+  const d = new Date(currentDate.value)
+  d.setDate(d.getDate() + offset)
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  if (d > today) return
+  currentDate.value = formatDateStr(d)
+  loadAll()
+}
+
+function formatCost(v) {
+  if (!v) return '0'
+  const n = parseFloat(v)
+  if (n >= 10000) return (n / 10000).toFixed(1) + 'w'
+  return n.toFixed(0)
+}
+
+function formatPct(v) {
+  if (!v) return '0%'
+  const n = parseFloat(v)
+  if (n > 1) return n.toFixed(1) + '%'
+  return (n * 100).toFixed(1) + '%'
+}
+
+function formatRoi(v) {
+  if (!v) return '0.00'
+  return parseFloat(v).toFixed(2)
+}
+
+function formatScore(v) {
+  if (!v) return '0'
+  return parseFloat(v).toFixed(1)
+}
+
+function getScoreBadgeClass(score) {
+  const s = parseFloat(score || 0)
+  if (s >= 80) return 'badge-green'
+  if (s >= 60) return 'badge-blue'
+  if (s >= 40) return 'badge-orange'
+  return 'badge-red'
+}
+
+function getBarStyle(val) {
+  const v = parseFloat(val || 0)
+  return { width: Math.min(v / 20 * 100, 100) + '%' }
+}
+
+function getBarClass(val) {
+  const v = parseFloat(val || 0)
+  if (v >= 16) return 'fill-green'
+  if (v >= 12) return 'fill-blue'
+  if (v >= 8) return 'fill-orange'
+  return 'fill-red'
+}
+
+function getIssueClass(issue) {
+  if (typeof issue === 'object' && issue.level === 'severe') return 'severe'
+  return 'moderate'
+}
+
+function getIssueText(issue) {
+  if (typeof issue === 'string') return issue
+  return issue.text || issue.label || issue.message || '未知问题'
+}
+
+function formatDateTime(dt) {
+  if (!dt) return '-'
+  const d = new Date(dt)
+  return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`
+}
+
+function openVideo(item) {
+  if (item.material_id) {
+    // 跳千川后台查看（CDN直链会过期，统一走千川后台）
+    window.open(`https://qianchuan.jinritemai.com/creative/material/video?material_id=${item.material_id}`, '_blank')
+  } else {
+    message.warning('该素材无视频链接')
+  }
+}
+
+async function loadMaterials() {
+  loading.value = true
+  try {
+    const res = await request.get('/material-audit/list', { params: { date: currentDate.value } })
+    if (res.code === 0) {
+      materials.value = res.data || []
+      currentPage.value = 1
+    } else {
+      materials.value = []
+    }
+  } catch (e) {
+    console.error('加载审核列表失败', e)
+    materials.value = []
+  } finally {
+    loading.value = false
+  }
+}
+
+async function loadReport() {
+  try {
+    const res = await request.get('/material-audit/report', { params: { date: currentDate.value } })
+    if (res.code === 0) {
+      report.value = res.data || null
+    } else {
+      report.value = null
+    }
+  } catch (e) {
+    console.error('加载审核报告失败', e)
+    report.value = null
+  }
+}
+
+function loadAll() {
+  loadMaterials()
+  loadReport()
+}
+
+async function handleRun() {
+  running.value = true
+  try {
+    const res = await request.post('/material-audit/run')
+    if (res.code === 0) {
+      message.info('审核已启动，AI正在分析中...(约2-5分钟)')
+      // 轮询直到数据出现
+      let attempts = 0
+      const poll = setInterval(async () => {
+        attempts++
+        try {
+          const r = await request.get('/material-audit/list', { params: { date: currentDate.value } })
+          if (r.code === 0 && r.data?.length > 0) {
+            clearInterval(poll)
+            running.value = false
+            loadAll()
+            message.success(`审核完成，共 ${r.data.length} 条素材`)
+          }
+        } catch {}
+        if (attempts >= 40) { // 最多等5分钟
+          clearInterval(poll)
+          running.value = false
+          message.info('审核仍在进行中，请稍后手动刷新')
+        }
+      }, 8000)
+    } else {
+      running.value = false
+      message.warning(res.msg || '触发审核失败')
+    }
+  } catch (e) {
+    running.value = false
+    message.error('触发审核失败，请稍后重试')
+  }
+}
+
+onMounted(() => { loadAll() })
+</script>
+
+<style scoped>
+.audit-page {
+  padding-bottom: calc(var(--tabnav-h, 0px) + var(--safe-b, 0px) + 16px);
+  min-height: 100vh;
+  background: var(--bg-page);
+}
+
+/* 顶部 */
+.page-header {
+  position: sticky;
+  top: var(--header-h, 0);
+  z-index: 10;
+  background: var(--bg-card, #fff);
+  border-bottom: 1px solid var(--border, #f0f0f0);
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.page-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text-primary, #1a1a2e);
+  flex-shrink: 0;
+}
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.date-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.date-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #e8e8e8);
+  background: transparent;
+  color: var(--text-secondary, #666);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.date-btn:active { background: var(--bg-page, #f5f6f8); }
+.date-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.date-display {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary, #333);
+  min-width: 60px;
+  text-align: center;
+}
+.run-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: none;
+  background: #1677FF;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.run-btn:active { background: #0958d9; }
+.run-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.btn-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255,255,255,0.4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+/* 统计栏 */
+.stats-bar {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  padding: 12px 16px;
+  background: var(--bg-card, #fff);
+  border-bottom: 1px solid var(--border, #f0f0f0);
+}
+.stat-item {
+  text-align: center;
+  padding: 10px 4px;
+  background: var(--bg-page, #f5f6f8);
+  border-radius: 8px;
+}
+.stat-label {
+  font-size: 11px;
+  color: var(--text-hint, #999);
+  margin-bottom: 4px;
+}
+.stat-value {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.stat-value.primary { color: #1677FF; }
+.stat-value.green { color: #52C41A; }
+.stat-value.blue { color: #1677FF; }
+.stat-value.orange { color: #FA8C16; }
+.stat-value.red { color: #FF4D4F; }
+.stat-value.warn { color: #FA8C16; }
+
+/* AI日报 */
+.report-card {
+  margin: 10px 12px 0;
+  background: var(--bg-card, #fff);
+  border-radius: 12px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  overflow: hidden;
+}
+.report-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  cursor: pointer;
+  user-select: none;
+}
+.report-header:active { background: var(--bg-page, #fafafa); }
+.report-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #722ED1;
+}
+.expand-icon {
+  font-size: 12px;
+  color: var(--text-hint, #999);
+}
+.report-body {
+  padding: 0 14px 14px;
+  border-top: 1px solid var(--border, #f0f0f0);
+}
+.report-text {
+  padding-top: 12px;
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--text-primary, #333);
+  white-space: pre-wrap;
+}
+
+/* 加载 & 空状态 */
+.loading-state {
+  display: flex;
+  justify-content: center;
+  padding: 60px 20px;
+}
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  color: var(--text-hint, #999);
+  gap: 8px;
+}
+.empty-state p { margin: 0; font-size: 14px; }
+.empty-hint { font-size: 12px; color: var(--text-hint, #bbb); }
+
+/* 素材列表 */
+.material-list {
+  padding: 10px 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.audit-card {
+  background: var(--bg-card, #fff);
+  border-radius: 12px;
+  padding: 14px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+}
+
+/* 列表信息 */
+.list-info { font-size: 12px; color: var(--text-hint, #999); margin-bottom: 6px; }
+
+/* 卡片顶部 */
+.card-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.card-cover {
+  flex-shrink: 0;
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  position: relative;
+  cursor: pointer;
+}
+.card-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.cover-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.cover-play-icon {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.3); color: #fff; font-size: 14px;
+  opacity: 0; transition: opacity 0.2s;
+}
+.card-cover:hover .cover-play-icon { opacity: 1; }
+.card-info { flex: 1; min-width: 0; }
+.card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary, #333);
+  line-height: 1.4;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.card-title.clickable { cursor: pointer; display: flex; align-items: flex-start; gap: 3px; }
+.card-title.clickable:hover { color: #1677FF; }
+.link-icon { flex-shrink: 0; margin-top: 2px; opacity: 0.4; }
+.card-title.clickable:hover .link-icon { opacity: 1; }
+.card-date { font-size: 11px; color: var(--text-hint, #999); margin-top: 2px; }
+
+/* 分页 */
+.pagination {
+  display: flex; align-items: center; justify-content: center; gap: 12px;
+  padding: 16px 0 8px;
+}
+.page-btn {
+  padding: 5px 14px; border-radius: 6px; border: 1px solid var(--border, #e8e8e8);
+  background: var(--bg-card, #fff); font-size: 12px; color: var(--text-secondary, #555);
+  cursor: pointer; transition: all 0.15s;
+}
+.page-btn:hover:not(:disabled) { border-color: #1677FF; color: #1677FF; }
+.page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.page-info { font-size: 12px; color: var(--text-hint, #999); }
+
+/* 视频弹窗 */
+.video-modal {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+}
+.video-modal-inner {
+  background: #000; border-radius: 12px; overflow: hidden; width: 100%; max-width: 420px;
+}
+.video-modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; background: #111;
+}
+.video-modal-title {
+  font-size: 13px; color: #fff; font-weight: 600;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis; flex: 1;
+}
+.video-modal-close {
+  border: none; background: none; color: #999; font-size: 18px; cursor: pointer; padding: 0 4px;
+}
+.video-modal-close:hover { color: #fff; }
+.video-modal-player { width: 100%; max-height: 70vh; display: block; }
+
+/* 数据指标 */
+.metrics-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.metric-tag {
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary, #555);
+  background: var(--bg-page, #f5f6f8);
+}
+
+/* 评分区域 */
+.score-section {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.score-badge {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 800;
+  color: #fff;
+}
+.badge-green { background: linear-gradient(135deg, #52C41A, #73D13D); }
+.badge-blue { background: linear-gradient(135deg, #1677FF, #4096FF); }
+.badge-orange { background: linear-gradient(135deg, #FA8C16, #FFC53D); }
+.badge-red { background: linear-gradient(135deg, #FF4D4F, #FF7875); }
+
+.score-bars {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.bar-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.bar-label {
+  flex-shrink: 0;
+  width: 28px;
+  font-size: 10px;
+  color: var(--text-hint, #999);
+  text-align: right;
+}
+.bar-track {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-page, #f0f0f0);
+  overflow: hidden;
+}
+.bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+.fill-green { background: #52C41A; }
+.fill-blue { background: #1677FF; }
+.fill-orange { background: #FA8C16; }
+.fill-red { background: #FF4D4F; }
+.bar-value {
+  flex-shrink: 0;
+  width: 20px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary, #666);
+  text-align: right;
+}
+
+/* 问题标签 */
+.issues-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.issue-tag {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.issue-tag.severe {
+  background: #FFF1F0;
+  color: #CF1322;
+  border: 1px solid #FFA39E;
+}
+.issue-tag.moderate {
+  background: #FFF7E6;
+  color: #D46B08;
+  border: 1px solid #FFD591;
+}
+
+/* 画面分析 */
+.visual-box {
+  background: #F0F5FF;
+  border-radius: 8px;
+  padding: 10px 12px;
+  border: 1px solid #D6E4FF;
+  margin-bottom: 8px;
+}
+.visual-label {
+  font-size: 11px;
+  color: #2F54EB;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.visual-text {
+  font-size: 12px;
+  color: #333;
+  line-height: 1.6;
+}
+
+/* 建议 */
+.suggestion-box {
+  background: #FFFBE6;
+  border-radius: 8px;
+  padding: 10px 12px;
+  border: 1px solid #FFF1B8;
+}
+.suggestion-text {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #874D00;
+}
+
+/* 评分维度说明 */
+.dimensions-card {
+  margin: 10px 12px 0;
+  background: var(--bg-card, #fff);
+  border-radius: 12px;
+  padding: 12px 14px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+}
+.dim-title { font-size: 13px; font-weight: 700; color: var(--text-primary, #333); margin-bottom: 8px; }
+.dim-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.dim-item {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 6px 2px; border-radius: 8px; background: var(--bg-page, #f5f6f8);
+}
+.dim-emoji { font-size: 16px; }
+.dim-name { font-size: 10px; color: var(--text-secondary, #666); font-weight: 500; }
+.dim-max { font-size: 10px; color: var(--text-hint, #999); }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (min-width: 768px) {
+  .audit-page { padding-bottom: 24px; }
+  .material-list { padding: 10px 24px 0; }
+  .stats-bar { padding: 12px 24px; }
+  .report-card { margin: 10px 24px 0; }
+}
+</style>

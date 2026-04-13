@@ -1,0 +1,333 @@
+/**
+ * 快手小店 OAuth 授权路由
+ * 快手开放平台文档: https://open.kwaixiaodian.com
+ */
+const axios = require('axios');
+const crypto = require('crypto');
+const db = require('../db');
+const logger = require('../logger');
+
+const KS_APP_KEY = process.env.KS_APP_KEY || 'ks650488674676453513';
+const KS_APP_SECRET = process.env.KS_APP_SECRET || 'MZQOOF3KXqnewfJ6xKZ2Sg';
+const KS_SIGN_SECRET = process.env.KS_SIGN_SECRET || '5e2256815bc4bb176234e1a10c284581';
+const KS_REDIRECT_URI = process.env.KS_REDIRECT_URI || 'https://business.snefe.com/api/ks/oauth-callback';
+const KS_AUTH_URL = 'https://open.kwaixiaodian.com/oauth/authorize';
+const KS_TOKEN_URL = 'https://open.kwaixiaodian.com/oauth/token';
+const KS_OPENAPI_BASE = 'https://openapi.kwaixiaodian.com';
+
+function generateSign(params) {
+  const sortedKeys = Object.keys(params).sort();
+  let paramStr = '';
+  for (const key of sortedKeys) {
+    if (params[key] !== null && params[key] !== undefined) {
+      paramStr += key + '=' + params[key] + '&';
+    }
+  }
+  paramStr += 'signSecret=' + KS_SIGN_SECRET;
+  return crypto.createHash('md5').update(paramStr).digest('hex');
+}
+
+async function ksOpenApi(accessToken, method, businessParams = {}) {
+  const paramJson = JSON.stringify(businessParams);
+  const systemParams = {
+    method,
+    appkey: KS_APP_KEY,
+    access_token: accessToken,
+    timestamp: String(Date.now()),
+    version: '1',
+    signMethod: 'MD5',
+    param: paramJson,
+  };
+  systemParams.sign = generateSign(systemParams);
+  // URL路径: method的.替换为/ (官方文档格式)
+  const urlPath = '/' + method.replace(/\./g, '/');
+  // 官方要求: 系统参数放URL query string, param放POST body
+  const qs = require('querystring');
+  const queryParams = {
+    appkey: systemParams.appkey,
+    method: systemParams.method,
+    version: systemParams.version,
+    access_token: systemParams.access_token,
+    timestamp: systemParams.timestamp,
+    signMethod: systemParams.signMethod,
+    sign: systemParams.sign,
+  };
+  const url = KS_OPENAPI_BASE + urlPath + '?' + qs.stringify(queryParams);
+  const res = await axios.post(url, qs.stringify({ param: paramJson }), {
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Accept': 'application/json;charset=UTF-8'
+    },
+    timeout: 15000
+  });
+  return res.data;
+}
+
+const router = require('express').Router();
+
+/**
+ * GET /api/ks/oauth-url
+ * 生成快手授权链接
+ */
+router.get('/oauth-url', (req, res) => {
+  if (!KS_APP_SECRET) {
+    return res.json({ code: -1, msg: '快手AppSecret未配置，请在.env中设置KS_APP_SECRET' });
+  }
+  const state = 'ks_' + Date.now();
+  // 快手OAuth2.0授权地址
+  // scope: 商家授权范围，根据申请的权限填写
+  const scope = 'merchant_order,merchant_item,merchant_refund,merchant_logistics,merchant_shop,merchant_funds,merchant_promotion,merchant_user,merchant_video,merchant_material,merchant_langbridge,user_info';
+  const url = `${KS_AUTH_URL}?app_id=${KS_APP_KEY}&redirect_uri=${encodeURIComponent(KS_REDIRECT_URI)}&response_type=code&scope=${scope}&state=${state}`;
+  res.json({ code: 0, data: { url, state } });
+});
+
+/**
+ * GET /api/ks/oauth-callback
+ * 快手授权回调
+ */
+router.get('/oauth-callback', async (req, res) => {
+  const { code, state } = req.query;
+  if (!code) {
+    return res.send('<h2>授权失败</h2><pre>缺少授权码(code)</pre>');
+  }
+
+  try {
+    // Step 1: 用 code 换取 access_token
+    const tokenRes = await axios.post(KS_TOKEN_URL, null, {
+      params: {
+        app_id: KS_APP_KEY,
+        app_secret: KS_APP_SECRET,
+        grant_type: 'code',
+        code: code
+      },
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    });
+
+    const result = tokenRes.data;
+    if (result.result !== 1 || !result.access_token) {
+      logger.error('[KS-OAuth] Token换取失败', result);
+      return res.send(`<h2>授权失败</h2><pre>${JSON.stringify(result, null, 2)}</pre>`);
+    }
+
+    const { access_token, refresh_token, expires_in, open_id } = result;
+    const expiresAt = new Date(Date.now() + (expires_in || 86400) * 1000);
+    logger.info(`[KS-OAuth] Token获取成功, open_id=${open_id}, expires=${expiresAt.toISOString()}`);
+
+    // Step 2: 获取店铺信息
+    let shopName = '快手店铺';
+    let shopId = open_id;
+    try {
+      const shopRes = await ksOpenApi(access_token, 'open.merchant.shop.detail', {});
+      if (shopRes && shopRes.data) {
+        const shopData = shopRes.data;
+        shopName = shopData.shop_name || shopName;
+        shopId = String(shopData.shop_id || open_id);
+      }
+    } catch (e) {
+      logger.warn('[KS-OAuth] 获取店铺信息失败: ' + e.message);
+    }
+
+    // Step 3: 保存/更新到数据库
+    await db.query(`
+      INSERT INTO ks_accounts (shop_id, shop_name, access_token, refresh_token, token_expires_at, status)
+      VALUES (?, ?, ?, ?, ?, 1)
+      ON DUPLICATE KEY UPDATE
+        shop_name = VALUES(shop_name),
+        access_token = VALUES(access_token),
+        refresh_token = VALUES(refresh_token),
+        token_expires_at = VALUES(token_expires_at),
+        status = 1
+    `, [shopId, shopName, access_token, refresh_token || '', expiresAt]);
+
+    logger.info(`[KS-OAuth] 店铺已保存: ${shopName} (${shopId})`);
+
+    res.send(`<!DOCTYPE html><html><body style="text-align:center;padding:60px;font-family:sans-serif;background:#f0f2f5">
+      <div style="background:#fff;max-width:400px;margin:0 auto;padding:40px;border-radius:12px">
+        <h2 style="color:#52c41a">快手授权成功!</h2>
+        <p>店铺: <b>${shopName}</b></p>
+        <p>店铺ID: ${shopId}</p>
+        <p>Token有效期至: ${expiresAt.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}</p>
+        <p style="margin-top:20px;color:#888">此窗口可关闭</p>
+      </div></body></html>`);
+  } catch (e) {
+    logger.error('[KS-OAuth] 授权回调异常', { error: e.message, stack: e.stack });
+    res.send(`<h2>授权出错</h2><pre>${e.message}</pre>`);
+  }
+});
+
+/**
+ * POST /api/ks/refresh-token
+ * 刷新快手Token
+ */
+router.post('/refresh-token', async (req, res) => {
+  const { shop_id } = req.body;
+  try {
+    const [accounts] = await db.query(
+      'SELECT * FROM ks_accounts WHERE shop_id = ? AND status = 1', [shop_id]
+    );
+    if (!accounts.length) {
+      return res.json({ code: -1, msg: '店铺不存在或未启用' });
+    }
+    const acc = accounts[0];
+    const tokenRes = await axios.post(KS_TOKEN_URL, null, {
+      params: {
+        app_id: KS_APP_KEY,
+        app_secret: KS_APP_SECRET,
+        grant_type: 'refresh_token',
+        refresh_token: acc.refresh_token
+      }
+    });
+
+    const result = tokenRes.data;
+    if (result.result !== 1 || !result.access_token) {
+      return res.json({ code: -1, msg: 'Token刷新失败', detail: result });
+    }
+
+    const expiresAt = new Date(Date.now() + (result.expires_in || 86400) * 1000);
+    await db.query(
+      'UPDATE ks_accounts SET access_token=?, refresh_token=?, token_expires_at=? WHERE shop_id=?',
+      [result.access_token, result.refresh_token || acc.refresh_token, expiresAt, shop_id]
+    );
+
+    res.json({ code: 0, msg: 'Token刷新成功', data: { expires_at: expiresAt } });
+  } catch (e) {
+    logger.error('[KS] Token刷新异常', e.message);
+    res.json({ code: -1, msg: e.message });
+  }
+});
+
+/**
+ * GET /api/ks/accounts
+ * 获取快手店铺列表
+ */
+router.get('/accounts', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT id, shop_id, shop_name, status, token_expires_at, last_sync_at, created_at FROM ks_accounts ORDER BY id'
+    );
+    res.json({ code: 0, data: rows });
+  } catch (e) {
+    res.json({ code: -1, msg: e.message });
+  }
+});
+
+/**
+ * GET /api/ks/dashboard
+ * 快手店铺数据概览
+ */
+router.get('/dashboard', async (req, res) => {
+  try {
+    const { shop_id, date } = req.query;
+    const statDate = date || new Date().toISOString().slice(0, 10);
+
+    // 今日数据
+    const [todayRows] = await db.query(
+      'SELECT * FROM ks_daily_stats WHERE shop_id = ? AND stat_date = ?',
+      [shop_id, statDate]
+    );
+
+    // 昨日数据
+    const yesterday = new Date(statDate);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const [yesterdayRows] = await db.query(
+      'SELECT * FROM ks_daily_stats WHERE shop_id = ? AND stat_date = ?',
+      [shop_id, yesterday.toISOString().slice(0, 10)]
+    );
+
+    // 近7天趋势
+    const [trendRows] = await db.query(
+      `SELECT stat_date, order_cnt, pay_order_cnt, pay_amount, refund_cnt, refund_amount, gmv, avg_order_amount
+       FROM ks_daily_stats WHERE shop_id = ? AND stat_date >= DATE_SUB(?, INTERVAL 7 DAY)
+       ORDER BY stat_date`, [shop_id, statDate]
+    );
+
+    const today = todayRows[0] || {};
+    const yest = yesterdayRows[0] || {};
+
+    const calcChange = (t, y) => {
+      if (!y || y === 0) return t > 0 ? 100 : 0;
+      return ((t - y) / y * 100).toFixed(1);
+    };
+
+    res.json({
+      code: 0,
+      data: {
+        today: {
+          gmv: today.gmv || 0,
+          pay_amount: today.pay_amount || 0,
+          order_cnt: today.order_cnt || 0,
+          pay_order_cnt: today.pay_order_cnt || 0,
+          refund_cnt: today.refund_cnt || 0,
+          refund_amount: today.refund_amount || 0,
+          avg_order_amount: today.avg_order_amount || 0,
+        },
+        changes: {
+          gmv: calcChange(today.gmv || 0, yest.gmv || 0),
+          pay_amount: calcChange(today.pay_amount || 0, yest.pay_amount || 0),
+          order_cnt: calcChange(today.order_cnt || 0, yest.order_cnt || 0),
+          pay_order_cnt: calcChange(today.pay_order_cnt || 0, yest.pay_order_cnt || 0),
+          refund_cnt: calcChange(today.refund_cnt || 0, yest.refund_cnt || 0),
+          avg_order_amount: calcChange(today.avg_order_amount || 0, yest.avg_order_amount || 0),
+        },
+        trend: trendRows
+      }
+    });
+  } catch (e) {
+    res.json({ code: -1, msg: e.message });
+  }
+});
+
+/**
+ * GET /api/ks/orders
+ * 获取订单列表
+ */
+router.get('/orders', async (req, res) => {
+  try {
+    const { shop_id, page = 1, page_size = 20, start_date, end_date, status } = req.query;
+    const limit = Math.min(parseInt(page_size) || 20, 100);
+    const offset = (Math.max(parseInt(page) || 1, 1) - 1) * limit;
+
+    let where = 'WHERE shop_id = ?';
+    const params = [shop_id];
+
+    if (start_date) { where += ' AND create_time >= ?'; params.push(start_date + ' 00:00:00'); }
+    if (end_date) { where += ' AND create_time <= ?'; params.push(end_date + ' 23:59:59'); }
+    if (status !== undefined && status !== '') { where += ' AND order_status = ?'; params.push(status); }
+
+    const [[{ total }]] = await db.query(`SELECT COUNT(*) as total FROM ks_orders ${where}`, params);
+    const [rows] = await db.query(
+      `SELECT * FROM ks_orders ${where} ORDER BY create_time DESC LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
+
+    res.json({ code: 0, data: { list: rows, total, page: parseInt(page), page_size: limit } });
+  } catch (e) {
+    res.json({ code: -1, msg: e.message });
+  }
+});
+
+/**
+ * GET /api/ks/items
+ * 获取商品列表
+ */
+router.get('/items', async (req, res) => {
+  try {
+    const { shop_id, page = 1, page_size = 20 } = req.query;
+    const limit = Math.min(parseInt(page_size) || 20, 100);
+    const offset = (Math.max(parseInt(page) || 1, 1) - 1) * limit;
+
+    const [[{ total }]] = await db.query(
+      'SELECT COUNT(*) as total FROM ks_items WHERE shop_id = ?', [shop_id]
+    );
+    const [rows] = await db.query(
+      'SELECT * FROM ks_items WHERE shop_id = ? ORDER BY sales_volume DESC LIMIT ? OFFSET ?',
+      [shop_id, limit, offset]
+    );
+
+    res.json({ code: 0, data: { list: rows, total, page: parseInt(page), page_size: limit } });
+  } catch (e) {
+    res.json({ code: -1, msg: e.message });
+  }
+});
+
+module.exports = router;

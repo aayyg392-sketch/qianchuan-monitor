@@ -117,8 +117,24 @@
     </div>
 
     <!-- ===== 主内容区 ===== -->
-    <main class="dt-main">
-      <div class="dt-content">
+    <main class="dt-main" ref="mainRef"
+      @touchstart.passive="onPtrStart"
+      @touchmove.passive="onPtrMove"
+      @touchend.passive="onPtrEnd">
+      <!-- 下拉刷新指示器 -->
+      <div v-if="isMobile" class="ptr-indicator" :class="{ 'ptr-indicator--ready': ptrReady, 'ptr-indicator--loading': ptrLoading }"
+           :style="{ transform: 'translateY(' + ptrOffset + 'px)', opacity: Math.min(ptrOffset / 60, 1) }">
+        <div class="ptr-spinner">
+          <svg v-if="!ptrLoading" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               :style="{ transform: 'rotate(' + (ptrOffset * 3) + 'deg)' }">
+            <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+          </svg>
+          <div v-else class="ptr-spin-circle"></div>
+        </div>
+        <span class="ptr-text">{{ ptrLoading ? '刷新中...' : (ptrReady ? '松手刷新' : '下拉刷新') }}</span>
+      </div>
+      <div class="dt-content" :style="isMobile && ptrOffset > 0 ? { transform: 'translateY(' + ptrOffset + 'px)', transition: ptrTouching ? 'none' : 'transform 0.3s' } : {}">
         <router-view />
       </div>
     </main>
@@ -159,10 +175,57 @@ const syncing = ref(false)
 const alertCount = ref(0)
 const lastSyncTime = ref('')
 
+// Pull-to-refresh
+const mainRef = ref(null)
+const ptrOffset = ref(0)
+const ptrReady = ref(false)
+const ptrLoading = ref(false)
+const ptrTouching = ref(false)
+let ptrStartY = 0
+const PTR_THRESHOLD = 60
+const PTR_MAX = 80
+
+const onPtrStart = (e) => {
+  if (!isMobile.value || ptrLoading.value) return
+  const main = mainRef.value
+  if (main && main.scrollTop <= 0) {
+    ptrStartY = e.touches[0].clientY
+    ptrTouching.value = true
+  }
+}
+const onPtrMove = (e) => {
+  if (!ptrTouching.value || ptrLoading.value) return
+  const dy = e.touches[0].clientY - ptrStartY
+  if (dy > 0) {
+    const offset = Math.min(dy * 0.5, PTR_MAX)
+    ptrOffset.value = offset
+    ptrReady.value = offset >= PTR_THRESHOLD
+  } else {
+    ptrOffset.value = 0
+    ptrReady.value = false
+  }
+}
+const onPtrEnd = () => {
+  if (!ptrTouching.value) return
+  ptrTouching.value = false
+  if (ptrReady.value && !ptrLoading.value) {
+    ptrLoading.value = true
+    ptrOffset.value = PTR_THRESHOLD
+    ptrReady.value = false
+    setTimeout(() => {
+      window.location.reload()
+    }, 300)
+  } else {
+    ptrOffset.value = 0
+    ptrReady.value = false
+  }
+}
+
 const handleResize = () => { isMobile.value = window.innerWidth < 768 }
 onMounted(() => {
   window.addEventListener('resize', handleResize)
   loadAlertCount()
+  if (auth.token && !auth.permissions.menus?.length) auth.fetchPermissions()
 })
 onUnmounted(() => window.removeEventListener('resize', handleResize))
 
@@ -184,19 +247,21 @@ const industryIcon = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none
 const operationIcon = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>`
 const liveIcon = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49"/><path d="M7.76 16.24a6 6 0 0 1 0-8.49"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>`
 
-const openSubMenus = ref({ '/live': true, '/materials': true, '/campaigns': true, '/audience': true, '/industry': true, '/operations': true })
+const systemIcon = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`
+const tiktokIcon = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12a4 4 0 1 0 4 4V4a5 5 0 0 0 5 5"/></svg>`
+
+const openSubMenus = ref({})
 const toggleSubMenu = (path) => { openSubMenus.value[path] = !openSubMenus.value[path] }
 
-const navItems = [
-  { path: '/', label: '数据概览', icon: homeIcon },
+const _allNavItems = [
+  { path: '/', code: '/dashboard', label: '数据概览', icon: homeIcon },
   { path: '/live', label: '直播中心', icon: liveIcon, children: [
     { path: '/live-monitor', label: '实时监控' },
-    { path: '/live-comments', label: '智能评论' },
     { path: '/live-analytics', label: '分时数据' },
     { path: '/live-speech', label: '话术抓取' },
-    { path: '/live-alerts', label: '异常预警' },
-    { path: '/live-replay', label: '直播复盘' },
-    { path: '/live-competitor', label: '竞品监控' },
+    { path: '/live-replay', label: '主播复盘' },
+    { path: '/anchor-schedule', label: '主播排班' },
+    { path: '/anchor-stats', label: '主播数据' },
   ]},
   { path: '/materials', label: '素材管理', icon: materialIcon, children: [
     { path: '/materials', label: '素材列表' },
@@ -206,10 +271,11 @@ const navItems = [
     { path: '/super5s', label: '超级5秒镜头' },
     { path: '/ai-text2video', label: 'AI文生视频' },
     { path: '/material-dimensions', label: '内容人员' },
+    { path: '/ctr-analysis', label: 'CTR素材分析' },
   ]},
   { path: '/campaigns', label: '账户管理', icon: campaignIcon, children: [
     { path: '/campaigns', label: '账户列表' },
-    { path: '/incubation', label: '爆款孵化计划' },
+    { path: '/ai-trader', label: 'AI金牌投手' },
     { path: '/premium-materials', label: '优质素材' },
   ]},
   { path: '/audience', label: '达人管理', icon: influencerIcon, children: [
@@ -224,19 +290,80 @@ const navItems = [
   { path: '/operations', label: '运营中心', icon: operationIcon, children: [
     { path: '/ops-workbench', label: '运营工作台' },
     { path: '/ops-comments', label: '评论管理' },
+    { path: '/push-manager', label: '数据推送管理' },
+  ]},
+  { path: '/wx-ops', label: '视频号运营中心', icon: operationIcon, children: [
+    { path: '/wx-ops-workbench', label: '运营工作台' },
+    { path: '/wx-finder-list', label: '达人管理' },
+  ]},
+  { path: '/ks-ops', label: '快手运营中心', icon: operationIcon, children: [
+    { path: '/ks-workbench', label: '运营工作台' },
+    { path: '/ks-live-analytics', label: '直播电商联动' },
+    { path: '/ks-ad-dashboard', label: '账户管理' },
+    { path: '/ks-ad-pitcher', label: 'AI金牌投手' },
+    { path: '/ks-reviews', label: '评价管理' },
+  ]},
+  { path: '/tt-ops', label: '跨境TIKTOK', icon: tiktokIcon, children: [
+    { path: '/tt-dashboard', label: '跨境驾驶舱' },
+    { path: '/tt-materials', label: '素材管理' },
+    { path: '/tt-push', label: '素材推送' },
+    { path: '/tt-stats', label: '素材消耗' },
+    { path: '/tt-accounts', label: 'TikTok账户' },
+  ]},
+  { path: '/system', label: '系统管理', icon: systemIcon, children: [
+    { path: '/user-manage', code: '/accounts', label: '用户管理' },
+    { path: '/role-manage', label: '角色管理' },
+    { path: '/operation-logs', label: '操作日志' },
+    { path: '/settings', label: '系统设置' },
   ]},
   { path: '/reports', label: '数据分析', icon: chartIcon },
   { path: '/alerts', label: '告警中心', icon: bellIcon, badge: true },
 ]
-const allNavItems = [
+
+// 跨境TikTok - 移动端菜单项（追加）
+const _ttMobileItems = [
+  { path: '/tt-dashboard', label: '跨境驾驶舱', icon: tiktokIcon },
+  { path: '/tt-materials', label: 'TikTok素材', icon: tiktokIcon },
+  { path: '/tt-push', label: '素材推送', icon: tiktokIcon },
+  { path: '/tt-stats', label: '素材消耗', icon: tiktokIcon },
+  { path: '/tt-accounts', label: 'TikTok账户', icon: tiktokIcon },
+]
+
+// 默认只展开当前路由所在的父菜单
+;(() => {
+  const cur = route.path
+  for (const item of _allNavItems) {
+    if (item.children && item.children.some(c => cur === c.path || cur.startsWith(c.path + '/'))) {
+      openSubMenus.value[item.path] = true
+    }
+  }
+})()
+
+// 权限过滤：根据用户权限过滤菜单
+const canAccess = (code) => {
+  // 跨境TikTok模块：所有登录用户可见
+  if (code && (code.startsWith('/tt-') || code === '/tt-ops')) return true
+  const perms = auth.permissions
+  if (perms.is_super_admin || (perms.menus && perms.menus.includes('*'))) return true
+  return perms.menus && perms.menus.includes(code)
+}
+const navItems = computed(() => {
+  return _allNavItems.map(item => {
+    const menuCode = item.code || item.path
+    if (!item.children) {
+      return canAccess(menuCode) ? item : null
+    }
+    const filteredChildren = item.children.filter(c => canAccess(c.code || c.path))
+    if (!filteredChildren.length) return null
+    return { ...item, children: filteredChildren }
+  }).filter(Boolean)
+})
+const _mobileNavItems = [
   { path: '/', label: '数据概览', icon: homeIcon },
   { path: '/live-monitor', label: '实时监控', icon: liveIcon },
-  { path: '/live-comments', label: '智能评论', icon: liveIcon },
   { path: '/live-analytics', label: '分时数据', icon: liveIcon },
   { path: '/live-speech', label: '话术抓取', icon: liveIcon },
-  { path: '/live-alerts', label: '异常预警', icon: liveIcon },
-  { path: '/live-replay', label: '直播复盘', icon: liveIcon },
-  { path: '/live-competitor', label: '竞品监控', icon: liveIcon },
+  { path: '/live-replay', label: '主播复盘', icon: liveIcon },
   { path: '/materials', label: '素材列表', icon: materialIcon },
   { path: '/material-tasks', label: '素材任务', icon: materialIcon },
   { path: '/video-production', label: '爆款视频改造', icon: materialIcon },
@@ -244,7 +371,7 @@ const allNavItems = [
   { path: '/super5s', label: '超级5秒镜头', icon: materialIcon },
   { path: '/ai-text2video', label: 'AI文生视频', icon: materialIcon },
   { path: '/campaigns', label: '账户列表', icon: campaignIcon },
-  { path: '/incubation', label: '爆款孵化计划', icon: campaignIcon },
+  { path: '/ai-trader', label: 'AI金牌投手', icon: campaignIcon },
   { path: '/premium-materials', label: '优质素材', icon: campaignIcon },
   { path: '/material-dimensions', label: '内容人员', icon: materialIcon },
   { path: '/audience-profile', label: '产品人群画像', icon: influencerIcon },
@@ -254,28 +381,48 @@ const allNavItems = [
   { path: '/competitor-videos', label: '竞品爆款视频', icon: industryIcon },
   { path: '/ops-workbench', label: '运营工作台', icon: operationIcon },
   { path: '/ops-comments', label: '评论管理', icon: operationIcon },
+  { path: '/wx-ops-workbench', label: '视频号工作台', icon: operationIcon },
+  { path: '/wx-finder-list', label: '视频号达人', icon: operationIcon },
+  { path: '/ks-workbench', label: '快手工作台', icon: operationIcon },
+  { path: '/ks-live-analytics', label: '快手直播联动', icon: operationIcon },
+  { path: '/ks-reviews', label: '快手评价管理', icon: operationIcon },
   { path: '/reports', label: '数据分析', icon: chartIcon },
   { path: '/alerts', label: '告警中心', icon: bellIcon, badge: true },
-  { path: '/accounts', label: '账户管理', icon: accountIcon },
+  { path: '/user-manage', label: '用户管理', icon: accountIcon },
+  { path: '/role-manage', label: '角色管理', icon: systemIcon },
+  { path: '/operation-logs', label: '操作日志', icon: systemIcon },
   { path: '/settings', label: '系统设置', icon: settingsIcon },
 ]
-const tabItems = [
+// 移动端菜单也按RBAC过滤
+const allNavItems = computed(() => {
+  return [..._mobileNavItems, ..._ttMobileItems].filter(item => canAccess(item.path))
+})
+const _tabItemsDef = [
   { path: '/', label: '数据概览', shortLabel: '概览', icon: homeIcon },
   { path: '/materials', label: '素材监控', shortLabel: '素材', icon: materialIcon },
   { path: '/reports', label: '数据分析', shortLabel: '分析', icon: chartIcon },
   { path: '/alerts', label: '告警中心', shortLabel: '告警', icon: bellIcon, badge: true },
   { path: '/settings', label: '系统设置', shortLabel: '我的', icon: settingsIcon },
 ]
+const tabItems = computed(() => {
+  return _tabItemsDef.filter(item => canAccess(item.path))
+})
 
 const pageMap = {
   '/': '数据概览', '/materials': '素材管理', '/material-tasks': '素材任务', '/video-production': '爆款视频改造',
-  '/material-audit': '素材审核', '/campaigns': '账户列表', '/incubation': '爆款孵化计划',
+  '/material-audit': '素材审核', '/campaigns': '账户列表',
   '/audience-profile': '产品人群画像', '/influencer-match': '达人合作筛选', '/premium-materials': '优质素材', '/material-dimensions': '内容人员',
   '/ai-text2video': 'AI文生视频', '/industry-hotspot': '行业热点', '/industry-videos': '内容榜单', '/competitor-videos': '竞品爆款视频',
   '/ops-workbench': '运营工作台', '/ops-comments': '评论管理',
+  '/wx-ops-workbench': '视频号运营工作台', '/wx-finder-list': '达人管理',
+  '/ks-workbench': '快手运营工作台', '/ks-live-analytics': '直播电商联动',
+  '/ks-reviews': '评价管理',
   '/live-monitor': '实时监控', '/live-comments': '智能评论', '/live-analytics': '分时数据',
-  '/live-speech': '话术抓取', '/live-alerts': '异常预警', '/live-replay': '直播复盘', '/live-competitor': '竞品监控',
-  '/reports': '数据分析', '/alerts': '告警中心', '/accounts': '账户管理', '/settings': '系统设置'
+  '/live-speech': '话术抓取', '/live-replay': '主播复盘',
+  '/anchor-schedule': '主播排班', '/anchor-stats': '主播数据',
+  '/ai-trader': 'AI金牌投手',
+  '/reports': '数据分析', '/alerts': '告警中心', '/user-manage': '用户管理', '/accounts': '账户列表', '/role-manage': '角色管理', '/operation-logs': '操作日志', '/settings': '系统设置',
+  '/tt-dashboard': '跨境驾驶舱', '/tt-materials': '素材管理', '/tt-push': '素材推送', '/tt-stats': '素材消耗', '/tt-accounts': 'TikTok账户'
 }
 const currentTitle = computed(() => {
   if (route.path.includes('/remix')) return 'AI翻剪推荐'
@@ -283,12 +430,15 @@ const currentTitle = computed(() => {
 })
 const isActive = (path) => {
   if (path === '/') return route.path === '/' || route.path === '/dashboard'
-  if (path === '/live') return route.path.startsWith('/live-')
+  if (path === '/live') return route.path.startsWith('/live-') || route.path.startsWith('/anchor-')
   if (path === '/materials') return route.path === '/materials' || route.path.includes('/remix') || route.path === '/material-tasks' || route.path === '/video-production' || route.path === '/material-audit' || route.path.startsWith('/ai-')
-  if (path === '/campaigns') return route.path === '/campaigns' || route.path === '/incubation'
+  if (path === '/campaigns') return route.path === '/campaigns'
   if (path === '/audience') return route.path === '/audience-profile' || route.path === '/influencer-match'
   if (path === '/industry') return route.path.startsWith('/industry')
   if (path === '/operations') return route.path.startsWith('/ops-')
+  if (path === '/ks-ops') return route.path.startsWith('/ks-')
+  if (path === '/tt-ops') return route.path.startsWith('/tt-')
+  if (path === '/system') return route.path === '/user-manage' || route.path === '/role-manage' || route.path === '/operation-logs' || route.path === '/settings'
   return route.path.startsWith(path)
 }
 
@@ -327,12 +477,13 @@ const handleSync = async () => {
 
 /* ===== Header ===== */
 .dt-header {
+  pointer-events: auto !important;
   position: fixed;
   top: 0; left: 0; right: 0;
   height: var(--header-h);
   background: #fff;
   border-bottom: 1px solid var(--border);
-  z-index: 100;
+  z-index: 1002;
   box-shadow: 0 1px 4px rgba(0,0,0,0.04);
 }
 .dt-header__inner {
@@ -396,6 +547,7 @@ const handleSync = async () => {
 
 /* ===== Sidebar (desktop) ===== */
 .dt-sidebar {
+  pointer-events: auto !important;
   position: fixed;
   top: var(--header-h); left: 0; bottom: 0;
   width: var(--sidebar-w);
@@ -404,7 +556,7 @@ const handleSync = async () => {
   display: flex; flex-direction: column;
   padding: 12px 0;
   overflow-y: auto;
-  z-index: 90;
+  z-index: 1001;
 }
 
 /* ===== Sidebar Nav ===== */
@@ -499,6 +651,7 @@ const handleSync = async () => {
   backdrop-filter: blur(2px);
 }
 .dt-drawer {
+  pointer-events: auto !important;
   position: fixed;
   top: 0; left: 0; bottom: 0;
   width: 260px;
@@ -536,12 +689,13 @@ const handleSync = async () => {
 }
 .dt-content {
   padding: 16px;
-  max-width: 1280px;
+  max-width: 1600px;
   margin: 0 auto;
 }
 
 /* ===== Bottom Tab Navigation ===== */
 .dt-tabnav {
+  pointer-events: auto !important;
   position: fixed;
   bottom: 0; left: 0; right: 0;
   height: calc(var(--tabnav-h) + var(--safe-b));
@@ -549,7 +703,7 @@ const handleSync = async () => {
   background: #fff;
   border-top: 1px solid var(--border);
   display: flex;
-  z-index: 100;
+  z-index: 1001;
   box-shadow: 0 -2px 8px rgba(0,0,0,0.04);
 }
 .dt-tabnav__item {
@@ -573,4 +727,24 @@ const handleSync = async () => {
   .dt-main { padding-left: var(--sidebar-w); }
   .dt-content { padding: 20px 24px; }
 }
+/* ===== Pull-to-Refresh ===== */
+.ptr-indicator {
+  position: absolute; top: 0; left: 0; right: 0;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  height: 50px; margin-top: -50px;
+  color: #8c8c8c; font-size: 12px; font-weight: 500;
+  transition: transform 0.3s, opacity 0.3s;
+  z-index: 1; pointer-events: none;
+}
+.ptr-indicator--ready { color: #1677ff; }
+.ptr-indicator--loading { color: #1677ff; }
+.ptr-spinner { display: flex; align-items: center; justify-content: center; }
+.ptr-spin-circle {
+  width: 18px; height: 18px; border: 2px solid #e5e7eb;
+  border-top-color: #1677ff; border-radius: 50%;
+  animation: ptr-spin 0.7s linear infinite;
+}
+@keyframes ptr-spin { to { transform: rotate(360deg); } }
+.ptr-text { white-space: nowrap; }
+.dt-main { position: relative; overflow-x: hidden; }
 </style>

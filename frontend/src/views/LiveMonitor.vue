@@ -19,9 +19,9 @@
           <span class="lb-header__meta">直播时长：{{ liveDuration }}</span>
         </div>
         <div class="lb-header__right">
-          <a-select v-model:value="selectedRoomId" size="small" style="width:160px" @change="onRoomChange">
-            <a-select-option v-for="r in rooms" :key="r.id" :value="r.id">{{ r.nickname }}</a-select-option>
-          </a-select>
+          <a-segmented v-model:value="viewMode" :options="[{label:'基础版',value:'basic'},{label:'专业版',value:'pro'}]" size="small" class="lb-mode-switch" />
+          <a-select v-model:value="selectedRoomId" size="small" style="width:220px" @change="onRoomChange" :options="roomOptions" optionFilterProp="label" showSearch />
+          <a-button size="small" @click="discoverRooms" :loading="discovering">🔍 同步直播号</a-button>
           <a-button size="small" @click="showAddRoom = true">+ 添加</a-button>
           <a-button size="small" @click="toggleFullscreen" :title="isFullscreen ? '退出全屏' : '全屏'">
             <svg v-if="!isFullscreen" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
@@ -30,8 +30,13 @@
         </div>
       </div>
 
-      <!-- ===== 三栏主体 ===== -->
-      <div class="lb-body">
+      <!-- ===== 专业版 ===== -->
+      <LiveMonitorPro v-if="viewMode === 'pro'" :d="d" :trendHistory="trendHistory"
+        :danmakuList="danmakuList" :products="products" :streamInfo="streamInfo"
+        :currentRoom="currentRoom" :formatNum="formatNum" :formatMoney="formatMoney" :formatBigMoney="formatBigMoney" />
+
+      <!-- ===== 基础版三栏主体 ===== -->
+      <div v-else class="lb-body">
         <!-- 左栏 -->
         <div class="lb-col lb-col--left">
           <div class="lb-panel">
@@ -91,13 +96,13 @@
                 </thead>
                 <tbody>
                   <tr v-if="!products.length"><td colspan="6" style="text-align:center;padding:24px;color:#666">暂无商品数据</td></tr>
-                  <tr v-for="p in products" :key="p.id">
-                    <td><div class="lb-product-name">{{ p.name }}</div></td>
-                    <td>¥{{ p.price }}</td>
-                    <td>{{ p.click_cvr }}</td>
-                    <td>{{ p.pay_cvr }}</td>
+                  <tr v-for="(p, idx) in products" :key="idx">
+                    <td><div class="lb-product-name">{{ p.product_name || p.name }}</div></td>
+                    <td>¥{{ Number(p.price || 0).toFixed(2) }}</td>
+                    <td>{{ p.click_cvr || '0%' }}</td>
+                    <td>{{ p.pay_cvr || '0%' }}</td>
                     <td>¥{{ formatMoney(p.pay_amount) }}</td>
-                    <td>{{ p.pay_count }}</td>
+                    <td>{{ p.order_count || p.pay_count || 0 }}</td>
                   </tr>
                 </tbody>
               </table>
@@ -179,9 +184,12 @@ import { message } from 'ant-design-vue'
 import request from '../utils/request'
 import * as echarts from 'echarts'
 import flvjs from 'flv.js'
+import LiveMonitorPro from './LiveMonitorPro.vue'
+
+const viewMode = ref('basic')
 
 const isMobile = ref(window.innerWidth < 768)
-onMounted(() => window.addEventListener('resize', () => { isMobile.value = window.innerWidth < 768 }))
+const _onResize = () => { isMobile.value = window.innerWidth < 768 }
 
 // ===== State =====
 const rooms = ref([])
@@ -190,6 +198,14 @@ const selectedRoomId = ref(null)
 const showAddRoom = ref(false)
 const submitting = ref(false)
 const roomForm = reactive({ room_ids: '', nickname: '', mode: 'realtime' })
+const discovering = ref(false)
+const roomOptions = computed(() => {
+  return rooms.value.map(r => ({
+    value: r.id,
+    label: r.nickname + (r.advertiser_name ? ` (${r.advertiser_name.replace(/.*-/, '')})` : ''),
+  }))
+})
+
 const d = ref({ online_count: 0, peak_count: 0, total_viewers: 0, avg_stay: '0s', interact_rate: 0,
   comment_count: 0, like_count: 0, share_count: 0, product_click: 0, cart_count: 0,
   order_count: 0, gmv: 0, uv_value: 0, gpm: 0, online_trend: 0,
@@ -210,7 +226,7 @@ const toggleFullscreen = () => {
     document.exitFullscreen?.().then(() => { isFullscreen.value = false })
   }
 }
-document.addEventListener('fullscreenchange', () => { isFullscreen.value = !!document.fullscreenElement })
+const _onFsChange = () => { isFullscreen.value = !!document.fullscreenElement }
 
 // ===== Charts =====
 const trendChartRef = ref(null)
@@ -245,6 +261,16 @@ const loadTrendHistory = async () => {
 }
 
 // ===== Data Loading =====
+const discoverRooms = async () => {
+  discovering.value = true
+  try {
+    const res = await request.post('/live/rooms/discover')
+    message.success(res.msg || res.data?.msg || '同步完成')
+    await loadRooms()
+  } catch (e) { message.error('同步失败') }
+  discovering.value = false
+}
+
 const loadRooms = async () => {
   try {
     const res = await request.get('/live/rooms')
@@ -265,6 +291,7 @@ const selectRoom = async (room) => {
   initCharts()
   if (room.is_living) loadStreamUrl()
   loadDanmaku()
+  loadProducts()
 }
 
 const onRoomChange = (id) => {
@@ -290,6 +317,14 @@ const loadDanmaku = async () => {
         time: m.time ? new Date(m.time).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : ''
       }))
     }
+  } catch (e) { /* empty */ }
+}
+
+const loadProducts = async () => {
+  if (!currentRoom.value?.id) return
+  try {
+    const res = await request.get(`/live/rooms/${currentRoom.value.id}/products`)
+    if (res?.data?.length) products.value = res.data
   } catch (e) { /* empty */ }
 }
 
@@ -390,7 +425,7 @@ const addRooms = async () => {
 }
 
 // ===== Lifecycle =====
-onMounted(() => {
+onMounted(() => { window.addEventListener("resize", _onResize); document.addEventListener("fullscreenchange", _onFsChange);
   loadRooms()
   refreshTimer = setInterval(async () => {
     if (currentRoom.value) {
@@ -400,7 +435,7 @@ onMounted(() => {
     }
   }, 5000)
 })
-onUnmounted(() => { clearInterval(refreshTimer); destroyFlvPlayer(); trendChart?.dispose(); trafficChart?.dispose() })
+onUnmounted(() => { window.removeEventListener("resize", _onResize); document.removeEventListener("fullscreenchange", _onFsChange); clearInterval(refreshTimer); destroyFlvPlayer(); trendChart?.dispose(); trafficChart?.dispose() })
 </script>
 
 <style scoped>
@@ -505,4 +540,8 @@ onUnmounted(() => { clearInterval(refreshTimer); destroyFlvPlayer(); trendChart?
 :deep(.ant-form-item-label > label) { color: #C8D6E5; }
 :deep(.ant-input), :deep(.ant-input-affix-wrapper), :deep(textarea.ant-input) { background: #1E2D4A; border-color: #2A3F5F; color: #E0E6ED; }
 :deep(.ant-radio-wrapper) { color: #C8D6E5; }
+.lb-mode-switch { margin-right: 8px; }
+:deep(.lb-mode-switch .ant-segmented) { background: #1E2D4A; }
+:deep(.lb-mode-switch .ant-segmented-item) { color: #8B9DC3; }
+:deep(.lb-mode-switch .ant-segmented-item-selected) { background: #5B8FF9; color: #fff; }
 </style>

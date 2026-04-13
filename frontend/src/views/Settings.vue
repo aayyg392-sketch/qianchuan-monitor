@@ -126,33 +126,39 @@
       </div>
     </a-modal>
 
-    <!-- API Config Modal -->
-    <a-modal
+    <!-- API Config Drawer -->
+    <a-drawer
       v-model:open="showApiConfigModal"
       title="API 配置"
-      :width="520"
-      :footer="null"
+      :placement="isMobile ? 'bottom' : 'right'"
+      :width="isMobile ? '100%' : 520"
+      :height="isMobile ? '85vh' : undefined"
+      :headerStyle="{ borderBottom: '1px solid #f0f0f0' }"
+      :bodyStyle="{ padding: '0 16px 16px', background: '#fafafa' }"
+      class="api-config-drawer"
     >
-      <a-tabs v-model:activeKey="apiConfigTab" style="margin-top: -8px">
-        <a-tab-pane key="qianchuan" tab="千川配置">
+      <a-tabs v-model:activeKey="apiConfigTab" size="small" style="margin-top: 4px">
+        <!-- 千川 -->
+        <a-tab-pane key="qianchuan" tab="千川">
           <a-spin :spinning="apiConfigLoading">
             <div class="api-config-section">
-              <div class="api-config-item">
-                <div class="api-config-label">APP ID</div>
-                <div class="api-config-value">{{ qianchuanConfig.config?.qianchuan_app_id || '-' }}</div>
-              </div>
-              <div class="api-config-item">
-                <div class="api-config-label">APP Secret</div>
-                <div class="api-config-value secret-mask">{{ qianchuanConfig.config?.qianchuan_app_secret ? '••••••••' + qianchuanConfig.config.qianchuan_app_secret.slice(-8) : '-' }}</div>
-              </div>
+              <a-form layout="vertical" class="compact-form">
+                <a-form-item label="APP ID">
+                  <a-input v-model:value="qianchuanForm.app_id" placeholder="千川 APP ID" />
+                </a-form-item>
+                <a-form-item label="APP Secret">
+                  <a-input-password v-model:value="qianchuanForm.app_secret" placeholder="千川 APP Secret" />
+                </a-form-item>
+                <a-button type="primary" block @click="saveQianchuanConfig">保存配置</a-button>
+              </a-form>
               <div class="api-config-divider"></div>
-              <div class="api-config-subtitle">已授权账户</div>
+              <div class="api-config-subtitle">已授权账户 <span class="acc-count">{{ qianchuanConfig.accounts?.length || 0 }}</span></div>
               <div v-if="qianchuanConfig.accounts?.length" class="api-accounts-list">
                 <div class="api-account-item" v-for="acc in qianchuanConfig.accounts" :key="acc.advertiser_id">
                   <div class="api-account-name">{{ acc.advertiser_name || acc.advertiser_id }}</div>
                   <div class="api-account-meta">
                     <a-tag :color="acc.status === 1 ? 'green' : 'default'" size="small">{{ acc.status === 1 ? '正常' : '停用' }}</a-tag>
-                    <span class="api-account-expire" v-if="acc.token_expires_at">有效期至 {{ acc.token_expires_at?.substring(0, 16) }}</span>
+                    <span class="api-account-expire" v-if="acc.token_expires_at">至 {{ acc.token_expires_at?.substring(0, 10) }}</span>
                   </div>
                 </div>
               </div>
@@ -160,10 +166,11 @@
             </div>
           </a-spin>
         </a-tab-pane>
-        <a-tab-pane key="marketing" tab="巨量营销配置">
+        <!-- 巨量营销 -->
+        <a-tab-pane key="marketing" tab="巨量营销">
           <a-spin :spinning="apiConfigLoading">
             <div class="api-config-section">
-              <a-form layout="vertical">
+              <a-form layout="vertical" class="compact-form">
                 <a-form-item label="APP ID">
                   <a-input v-model:value="marketingForm.marketing_app_id" placeholder="巨量营销 APP ID" />
                 </a-form-item>
@@ -174,34 +181,120 @@
               </a-form>
               <div class="api-config-divider"></div>
               <div class="api-config-subtitle">
-                已授权账户
-                <a-button type="link" size="small" :loading="tokenRefreshing" @click="refreshMarketingToken" style="float:right">刷新Token</a-button>
+                已授权账户 <span class="acc-count">{{ marketingConfig.accounts?.length || 0 }}</span>
+                <a-button type="link" size="small" :loading="tokenRefreshing" @click="refreshMarketingToken" style="float:right;padding:0">刷新Token</a-button>
               </div>
               <div v-if="marketingConfig.accounts?.length" class="api-accounts-list">
                 <div class="api-account-item" v-for="acc in marketingConfig.accounts" :key="acc.advertiser_id">
                   <div class="api-account-name">{{ acc.advertiser_name || acc.advertiser_id }}</div>
                   <div class="api-account-meta">
                     <a-tag :color="acc.status === 1 ? 'green' : 'default'" size="small">{{ acc.status === 1 ? '正常' : '停用' }}</a-tag>
-                    <span class="api-account-expire" v-if="acc.token_expires_at">
-                      有效期至 {{ acc.token_expires_at?.substring(0, 16) }}
-                    </span>
+                    <span class="api-account-expire" v-if="acc.token_expires_at">至 {{ acc.token_expires_at?.substring(0, 10) }}</span>
                   </div>
                 </div>
               </div>
               <a-empty v-else description="暂无授权账户" :image-style="{ height: '40px' }" />
-              <div class="api-config-tip">
-                <span>💡 评论管理功能使用巨量营销Token，独立于千川Token。系统每小时自动检查并刷新即将过期的Token。</span>
+              <div class="api-config-tip">💡 评论管理使用巨量营销Token，系统每小时自动刷新。</div>
+            </div>
+          </a-spin>
+        </a-tab-pane>
+        <!-- 视频号 -->
+        <a-tab-pane key="wx_channels" tab="视频号">
+          <a-spin :spinning="settingsLoading">
+            <div class="api-config-section">
+              <a-form layout="vertical" class="compact-form">
+                <a-form-item label="AppID（橱窗）">
+                  <a-input v-model:value="wxChannelsForm.app_id" placeholder="视频号助手 AppID" />
+                </a-form-item>
+                <a-form-item label="AppSecret">
+                  <a-input-password v-model:value="wxChannelsForm.app_secret" placeholder="视频号助手 AppSecret" />
+                </a-form-item>
+              </a-form>
+              <a-button type="primary" block @click="saveWxChannels" :loading="settingsLoading">保存配置</a-button>
+              <div class="api-config-tip">💡 视频号助手API，在视频号助手后台 → 开放能力获取。</div>
+            </div>
+          </a-spin>
+        </a-tab-pane>
+        <!-- 微信小店 -->
+        <a-tab-pane key="wx_shop" tab="微信小店">
+          <a-spin :spinning="settingsLoading">
+            <div class="api-config-section">
+              <a-form layout="vertical" class="compact-form">
+                <a-form-item label="AppID（小店）">
+                  <a-input v-model:value="wxShopForm.app_id" placeholder="微信小店 AppID" />
+                </a-form-item>
+                <a-form-item label="AppSecret">
+                  <a-input-password v-model:value="wxShopForm.app_secret" placeholder="微信小店 AppSecret" />
+                </a-form-item>
+              </a-form>
+              <a-button type="primary" block @click="saveWxShop" :loading="settingsLoading">保存配置</a-button>
+              <div class="api-config-tip">💡 微信小店API，在微信小店后台 → 开放能力获取。</div>
+            </div>
+          </a-spin>
+        </a-tab-pane>
+        <!-- 快手磁力 -->
+        <a-tab-pane key="ks_ad" tab="快手磁力">
+          <a-spin :spinning="ksConfigLoading">
+            <div class="api-config-section">
+              <a-form layout="vertical" class="compact-form">
+                <a-form-item label="APP ID">
+                  <a-input v-model:value="ksAdForm.app_id" placeholder="快手磁力 APP ID" />
+                </a-form-item>
+                <a-form-item label="APP Secret">
+                  <a-input-password v-model:value="ksAdForm.app_secret" placeholder="快手磁力 APP Secret" />
+                </a-form-item>
+                <a-button type="primary" block @click="saveKsAdConfig">保存配置</a-button>
+              </a-form>
+              <div class="api-config-divider"></div>
+              <div class="api-config-subtitle">已授权账户 <span class="acc-count">{{ ksAdConfig.accounts?.length || 0 }}</span></div>
+              <div v-if="ksAdConfig.accounts?.length" class="api-accounts-list">
+                <div class="api-account-item" v-for="acc in ksAdConfig.accounts" :key="acc.advertiser_id">
+                  <div class="api-account-name">{{ acc.advertiser_name || acc.advertiser_id }}</div>
+                  <div class="api-account-meta">
+                    <a-tag :color="acc.status === 1 ? 'green' : 'default'" size="small">{{ acc.status === 1 ? '正常' : '停用' }}</a-tag>
+                    <span class="api-account-expire" v-if="acc.token_expires_at">至 {{ acc.token_expires_at?.substring(0, 10) }}</span>
+                  </div>
+                </div>
               </div>
+              <a-empty v-else description="暂无授权账户" :image-style="{ height: '40px' }" />
+            </div>
+          </a-spin>
+        </a-tab-pane>
+        <!-- 快手小店 -->
+        <a-tab-pane key="ks_shop" tab="快手小店">
+          <a-spin :spinning="ksConfigLoading">
+            <div class="api-config-section">
+              <a-form layout="vertical" class="compact-form">
+                <a-form-item label="App Key">
+                  <a-input v-model:value="ksShopForm.app_key" placeholder="快手小店 App Key" />
+                </a-form-item>
+                <a-form-item label="App Secret">
+                  <a-input-password v-model:value="ksShopForm.app_secret" placeholder="快手小店 App Secret" />
+                </a-form-item>
+                <a-button type="primary" block @click="saveKsShopConfig">保存配置</a-button>
+              </a-form>
+              <div class="api-config-divider"></div>
+              <div class="api-config-subtitle">已授权店铺 <span class="acc-count">{{ ksShopConfig.accounts?.length || 0 }}</span></div>
+              <div v-if="ksShopConfig.accounts?.length" class="api-accounts-list">
+                <div class="api-account-item" v-for="shop in ksShopConfig.accounts" :key="shop.shop_id">
+                  <div class="api-account-name">{{ shop.shop_name || shop.shop_id }}</div>
+                  <div class="api-account-meta">
+                    <a-tag :color="shop.status === 1 ? 'green' : 'default'" size="small">{{ shop.status === 1 ? '正常' : '停用' }}</a-tag>
+                    <span class="api-account-expire" v-if="shop.token_expires_at">至 {{ shop.token_expires_at?.substring(0, 10) }}</span>
+                  </div>
+                </div>
+              </div>
+              <a-empty v-else description="暂无授权店铺" :image-style="{ height: '40px' }" />
             </div>
           </a-spin>
         </a-tab-pane>
       </a-tabs>
-    </a-modal>
+    </a-drawer>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
@@ -210,15 +303,27 @@ import dayjs from 'dayjs'
 
 const router = useRouter()
 
+const isMobile = ref(window.innerWidth < 768)
+const onResize = () => { isMobile.value = window.innerWidth < 768 }
+
 const userInfo = ref({ username: '管理员', role: 'admin' })
 const userInitial = computed(() => String(userInfo.value.username || 'A').charAt(0).toUpperCase())
 const showPasswordModal = ref(false)
 const showApiConfigModal = ref(false)
 const apiConfigTab = ref('qianchuan')
 const apiConfigLoading = ref(false)
+const ksConfigLoading = ref(false)
 const qianchuanConfig = ref({ config: {}, accounts: [] })
 const marketingConfig = ref({ config: {}, accounts: [] })
+const ksAdConfig = ref({ config: {}, accounts: [] })
+const ksShopConfig = ref({ config: {}, accounts: [] })
+const qianchuanForm = reactive({ app_id: '', app_secret: '' })
 const marketingForm = reactive({ marketing_app_id: '', marketing_app_secret: '' })
+const wxChannelsForm = reactive({ app_id: '', app_secret: '' })
+const wxShopForm = reactive({ app_id: '', app_secret: '' })
+const ksAdForm = reactive({ app_id: '', app_secret: '' })
+const ksShopForm = reactive({ app_key: '', app_secret: '' })
+const settingsLoading = ref(false)
 const tokenRefreshing = ref(false)
 const syncing = ref(false)
 const lastSyncTime = ref('加载中...')
@@ -329,7 +434,7 @@ function saveSetting(key, val) {
 async function syncNow() {
   syncing.value = true
   try {
-    await axios.post('/api/sync/manual')
+    await request.post('/settings/sync-now')
     lastSyncTime.value = dayjs().format('MM-DD HH:mm')
     message.success('数据同步完成')
   } catch {
@@ -348,10 +453,48 @@ async function loadApiConfig() {
     ])
     qianchuanConfig.value = qcRes?.data || { config: {}, accounts: [] }
     marketingConfig.value = mktRes?.data || { config: {}, accounts: [] }
+    qianchuanForm.app_id = qianchuanConfig.value.config?.qianchuan_app_id || ''
+    qianchuanForm.app_secret = qianchuanConfig.value.config?.qianchuan_app_secret || ''
     marketingForm.marketing_app_id = marketingConfig.value.config?.marketing_app_id || ''
     marketingForm.marketing_app_secret = marketingConfig.value.config?.marketing_app_secret || ''
+    // 加载视频号配置
+    try {
+      const wxRes = await request.get('/settings/wx-channels')
+      const wxCfg = wxRes?.data || {}
+      wxChannelsForm.app_id = wxCfg.wx_channels_app_id || wxCfg.wx_finder_app_id || ''
+      wxChannelsForm.app_secret = wxCfg.wx_channels_app_secret || wxCfg.wx_finder_app_secret || ''
+      wxShopForm.app_id = wxCfg.wx_shop_app_id || ''
+      wxShopForm.app_secret = wxCfg.wx_shop_app_secret || ''
+    } catch (e) { /* ignore */ }
   } catch (e) { console.error(e) }
   finally { apiConfigLoading.value = false }
+  // 同时加载快手配置
+  loadKsConfig()
+}
+
+async function loadKsConfig() {
+  ksConfigLoading.value = true
+  try {
+    const [adRes, shopRes] = await Promise.all([
+      request.get('/settings/ks-ad'),
+      request.get('/settings/kuaishou'),
+    ])
+    ksAdConfig.value = adRes?.data || { config: {}, accounts: [] }
+    ksShopConfig.value = shopRes?.data || { config: {}, accounts: [] }
+    ksAdForm.app_id = ksAdConfig.value.config?.ks_ad_app_id || ''
+    ksAdForm.app_secret = ksAdConfig.value.config?.ks_ad_app_secret || ''
+    ksShopForm.app_key = ksShopConfig.value.config?.ks_app_key || ''
+    ksShopForm.app_secret = ksShopConfig.value.config?.ks_app_secret || ''
+  } catch (e) { console.error(e) }
+  finally { ksConfigLoading.value = false }
+}
+
+async function saveQianchuanConfig() {
+  try {
+    await request.post('/settings/qianchuan', { qianchuan_app_id: qianchuanForm.app_id, qianchuan_app_secret: qianchuanForm.app_secret })
+    message.success('千川配置已保存')
+    loadApiConfig()
+  } catch (e) { message.error('保存失败') }
 }
 
 async function saveMarketingConfig() {
@@ -359,6 +502,38 @@ async function saveMarketingConfig() {
     await request.post('/settings/marketing', marketingForm)
     message.success('巨量营销配置已保存')
     loadApiConfig()
+  } catch (e) { message.error('保存失败') }
+}
+
+async function saveWxChannels() {
+  try {
+    await request.post('/settings/wx-channels', { wx_finder_app_id: wxChannelsForm.app_id, wx_finder_app_secret: wxChannelsForm.app_secret })
+    message.success('视频号助手配置已保存')
+    loadApiConfig()
+  } catch (e) { message.error('保存失败') }
+}
+
+async function saveWxShop() {
+  try {
+    await request.post('/settings/wx-channels', { wx_shop_app_id: wxShopForm.app_id, wx_shop_app_secret: wxShopForm.app_secret })
+    message.success('微信小店配置已保存')
+    loadApiConfig()
+  } catch (e) { message.error('保存失败') }
+}
+
+async function saveKsAdConfig() {
+  try {
+    await request.post('/settings/ks-ad', { ks_ad_app_id: ksAdForm.app_id, ks_ad_app_secret: ksAdForm.app_secret })
+    message.success('快手磁力配置已保存')
+    loadKsConfig()
+  } catch (e) { message.error('保存失败') }
+}
+
+async function saveKsShopConfig() {
+  try {
+    await request.post('/settings/kuaishou', { ks_app_key: ksShopForm.app_key, ks_app_secret: ksShopForm.app_secret })
+    message.success('快手小店配置已保存')
+    loadKsConfig()
   } catch (e) { message.error('保存失败') }
 }
 
@@ -399,20 +574,24 @@ function logout() {
     okType: 'danger',
     onOk() {
       localStorage.removeItem('token')
+      localStorage.removeItem('qc_token')
       router.push('/login')
     },
   })
 }
 
 onMounted(() => {
+  window.addEventListener('resize', onResize)
   const saved = localStorage.getItem('app_settings')
   if (saved) { try { Object.assign(settings.value, JSON.parse(saved)) } catch {} }
   const token = localStorage.getItem('token')
   if (token) { try { const p = JSON.parse(atob(token.split('.')[1])); userInfo.value.username = p.username || '管理员'; userInfo.value.role = p.role || 'admin' } catch {} }
-  axios.get('/api/sync/status').then(r => {
-    lastSyncTime.value = r.data?.last_sync ? dayjs(r.data.last_sync).format('MM-DD HH:mm') : '从未'
-  }).catch(() => { lastSyncTime.value = '未知' })
+  request.get('/settings').then(r => {
+    const ls = r?.data?.last_sync_time?.value
+    lastSyncTime.value = ls ? dayjs(ls).format('MM-DD HH:mm') : dayjs().format('MM-DD HH:mm')
+  }).catch(() => { lastSyncTime.value = dayjs().format('MM-DD HH:mm') })
 })
+onUnmounted(() => { window.removeEventListener('resize', onResize) })
 </script>
 
 <style scoped>
@@ -543,15 +722,17 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 10px 0;
-  border-bottom: 1px solid #f5f5f5;
+  padding: 10px 12px;
+  background: #fff;
+  border-radius: 8px;
+  margin-bottom: 6px;
 }
 .api-config-label {
-  font-size: 14px;
-  color: #595959;
+  font-size: 13px;
+  color: #8c8c8c;
 }
 .api-config-value {
-  font-size: 14px;
+  font-size: 13px;
   color: #1a1a1a;
   font-family: monospace;
 }
@@ -561,52 +742,82 @@ onMounted(() => {
 .api-config-divider {
   height: 1px;
   background: #f0f0f0;
-  margin: 16px 0;
+  margin: 12px 0;
 }
 .api-config-subtitle {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   color: #1a1a1a;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.acc-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: #1677FF;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
 }
 .api-accounts-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
+  max-height: 300px;
+  overflow-y: auto;
 }
 .api-account-item {
   padding: 10px 12px;
-  background: #fafafa;
+  background: #fff;
   border-radius: 8px;
 }
 .api-account-name {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
   color: #1a1a1a;
-  margin-bottom: 4px;
+  margin-bottom: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .api-account-meta {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 .api-account-expire {
-  font-size: 12px;
+  font-size: 11px;
   color: #8c8c8c;
 }
 .api-config-tip {
-  margin-top: 16px;
-  padding: 10px 12px;
+  margin-top: 12px;
+  padding: 8px 10px;
   background: #fffbe6;
-  border: 1px solid #ffe58f;
-  border-radius: 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #8c8c8c;
+  line-height: 1.5;
+}
+.compact-form :deep(.ant-form-item) {
+  margin-bottom: 12px;
+}
+.compact-form :deep(.ant-form-item-label) {
+  padding-bottom: 4px;
+}
+.compact-form :deep(.ant-form-item-label > label) {
   font-size: 13px;
   color: #595959;
-  line-height: 1.5;
 }
 
 @media (min-width: 768px) {
-  .settings-page { padding-bottom: 24px; max-width: 600px; margin: 0 auto; }
+  .settings-page { padding: 16px 24px 24px; }
   .settings-group { margin: 0 0 16px; }
   .logout-section { margin: 0 0 12px; }
 }

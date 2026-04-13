@@ -206,6 +206,23 @@ const logger = require('../logger');
       INDEX idx_created (created_at)
     )`);
 
+    // 直播间商品表
+    await db.query(`CREATE TABLE IF NOT EXISTS live_products (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      room_id INT NOT NULL,
+      product_name VARCHAR(255),
+      product_img VARCHAR(512),
+      price DECIMAL(10,2) DEFAULT 0,
+      click_count INT DEFAULT 0,
+      order_count INT DEFAULT 0,
+      pay_amount DECIMAL(12,2) DEFAULT 0,
+      click_cvr VARCHAR(20) DEFAULT '0%',
+      pay_cvr VARCHAR(20) DEFAULT '0%',
+      status TINYINT DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )`);
+
     logger.info('✅ 直播中心数据表初始化完成');
   } catch (e) {
     logger.error('直播中心建表失败', { error: e.message });
@@ -217,13 +234,74 @@ const logger = require('../logger');
 // 获取直播间列表
 router.get('/rooms', auth(), async (req, res) => {
   try {
+    let accFilter = '';
+    const accP = [];
+    if (req.accountFilter) {
+      // 包含已关联账户的直播间 + 未关联账户的直播间（兼容老数据）
+      accFilter = ' AND (advertiser_id IN (' + req.accountFilter.map(() => '?').join(',') + ') OR advertiser_id IS NULL)';
+      accP.push(...req.accountFilter);
+    }
     const [rows] = await db.query(
-      `SELECT * FROM live_rooms WHERE status = 'active' ORDER BY is_living DESC, created_at DESC`
+      `SELECT r.*, a.advertiser_name FROM live_rooms r LEFT JOIN qc_accounts a ON r.advertiser_id = a.advertiser_id WHERE r.status = 'active'${accFilter} ORDER BY r.is_living DESC, r.created_at DESC`,
+      accP
     );
     res.json({ code: 0, data: rows });
   } catch (e) {
     logger.error('获取直播间列表失败', { error: e.message });
     res.json({ code: 500, msg: '获取失败' });
+  }
+});
+
+// 自动发现千川授权直播间
+router.post('/rooms/discover', auth(), async (req, res) => {
+  try {
+    const OE_API_BASE = 'https://ad.oceanengine.com/open_api';
+    const [accounts] = await db.query("SELECT advertiser_id, advertiser_name, access_token FROM qc_accounts WHERE status=1 AND access_token IS NOT NULL AND account_type='live'");
+    if (!accounts.length) return res.json({ code: 400, msg: '无直播全域推广账户' });
+
+    let added = 0, total = 0;
+    for (const acc of accounts) {
+      try {
+        const resp = await axios.get(`${OE_API_BASE}/v1.0/qianchuan/aweme/authorized/get/`, {
+          params: { advertiser_id: parseInt(acc.advertiser_id), page: '1', page_size: '50' },
+          headers: { 'Access-Token': acc.access_token },
+          timeout: 15000,
+        });
+        const awemeList = resp.data?.data?.aweme_id_list || [];
+        for (const aweme of awemeList) {
+          total++;
+          const awemeId = String(aweme.aweme_id);
+          const awemeName = aweme.aweme_name || '';
+          const showId = aweme.aweme_show_id || '';
+          // 检查是否已存在
+          const [existing] = await db.query(
+            'SELECT id FROM live_rooms WHERE room_id=? AND advertiser_id=?',
+            [awemeId, acc.advertiser_id]
+          );
+          if (existing.length) continue;
+          // 也检查show_id
+          if (showId) {
+            const [existShow] = await db.query(
+              'SELECT id FROM live_rooms WHERE room_id=? AND advertiser_id=?',
+              [showId, acc.advertiser_id]
+            );
+            if (existShow.length) continue;
+          }
+          await db.query(
+            `INSERT INTO live_rooms (room_id, advertiser_id, aweme_name, nickname, monitor_mode, status)
+             VALUES (?, ?, ?, ?, 'realtime', 'active')`,
+            [awemeId, acc.advertiser_id, awemeName, awemeName || acc.advertiser_name]
+          );
+          added++;
+        }
+      } catch (e) {
+        logger.warn(`[LiveDiscover] 账户${acc.advertiser_id}发现失败`, { error: e.message });
+      }
+    }
+    res.json({ code: 0, msg: `扫描${accounts.length}个账户，发现${total}个抖音号，新增${added}个直播间`, data: { total, added } });
+  } catch (e) {
+    logger.error('[LiveDiscover] 自动发现失败', { error: e.message });
+    res.json({ code: 500, msg: e.message });
   }
 });
 
@@ -312,17 +390,94 @@ router.get('/rooms/:id/timeslot', auth(), async (req, res) => {
 router.get('/rooms/:id/speech', auth(), async (req, res) => {
   try {
     const { category, high_convert, keyword, page = 1, pageSize = 50 } = req.query;
-    let sql = `SELECT * FROM live_speech_records WHERE room_id = ?`;
-    const params = [req.params.id];
-    if (category) { sql += ` AND category = ?`; params.push(category); }
-    if (high_convert === '1') { sql += ` AND is_high_convert = 1`; }
-    if (keyword) { sql += ` AND text_content LIKE ?`; params.push(`%${keyword}%`); }
-    sql += ` ORDER BY recorded_at DESC LIMIT ? OFFSET ?`;
-    params.push(parseInt(pageSize), (parseInt(page) - 1) * parseInt(pageSize));
-    const [rows] = await db.query(sql, params);
-    res.json({ code: 0, data: rows });
+    const roomId = req.params.id;
+    // 实时话术（最近30条）
+    const [realtimeRows] = await db.query('SELECT * FROM live_speech_records WHERE room_id = ? ORDER BY recorded_at DESC LIMIT 30', [roomId]);
+    const realtime = realtimeRows.map(r => ({
+      time: r.recorded_at ? new Date(r.recorded_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) : '',
+      text: r.text_content || '',
+      category: r.category || 'other',
+      is_high_convert: !!r.is_high_convert,
+      cvr: parseFloat(r.cvr || 0),
+      gmv: parseFloat(r.related_gmv || 0),
+      orders: r.related_orders || 0,
+    }));
+    // 话术库
+    let libSql = 'SELECT * FROM live_speech_records WHERE room_id = ?';
+    const libParams = [roomId];
+    if (category && category !== 'all') { libSql += ' AND category = ?'; libParams.push(category); }
+    if (high_convert === '1') { libSql += ' AND is_high_convert = 1'; }
+    if (keyword) { libSql += ' AND text_content LIKE ?'; libParams.push('%' + keyword + '%'); }
+    libSql += ' ORDER BY recorded_at DESC LIMIT ? OFFSET ?';
+    libParams.push(parseInt(pageSize), (parseInt(page) - 1) * parseInt(pageSize));
+    const [libRows] = await db.query(libSql, libParams);
+    const library = libRows.map(r => ({
+      time: r.recorded_at ? new Date(r.recorded_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) : '',
+      text: r.text_content || '',
+      category: r.category || 'other',
+      is_high_convert: !!r.is_high_convert,
+      cvr: parseFloat(r.cvr) || 0,
+      orders: r.related_orders || 0,
+      gmv: parseFloat(r.related_gmv) || 0,
+    }));
+    // 关键词提取（行业词库 + 滑动窗口）
+    const allText = realtimeRows.map(r => r.text_content || '').join(' ').replace(/[\u{1F300}-\u{1FFFF}]/gu, '');
+    const wordMap = {};
+    const industryWords = ['洗面奶','洁面乳','氨基酸','控油','保湿','补水','卸妆','清洁','黑头','闭口','粉刺','毛孔','美白','祛痘','护肤','眼影','腮红','眼线','口红','唇釉','BB霜','防晒','隔离','面膜','精华','乳液','套装','单品','大容量','旗舰店','正装','试用','发货','包邮','运费险','划算','福利','优惠','活动','链接','现货','限量','出油','干燥','温和','敏感肌','油皮','干皮','去角质','洗面','洗脸','洗澡','卸妆油','新品','升级','一号链接','回购','好用','省钱'];
+    industryWords.forEach(w => {
+      const regex = new RegExp(w, 'g');
+      const matches = allText.match(regex);
+      if (matches) wordMap[w] = matches.length;
+    });
+    allText.split(/[\s,.\u3002\uff0c\uff01\uff1f\u3001]+/).filter(w => w.length >= 2 && w.length <= 6).forEach(w => {
+      if (!industryWords.includes(w)) wordMap[w] = (wordMap[w] || 0) + 1;
+    });
+    const keywords = Object.entries(wordMap).filter(([,c]) => c >= 2).sort((a, b) => b[1] - a[1]).slice(0, 20).map(([text, count]) => ({ text, count }));
+    const [countRow] = await db.query('SELECT COUNT(*) as total FROM live_speech_records WHERE room_id = ?', [roomId]);
+    res.json({ code: 0, data: {
+      realtime, library, keywords,
+      is_recording: realtimeRows.length > 0,
+      record_duration: realtimeRows.length > 0 ? (realtimeRows.length * 30) + 's' : '--:--:--',
+      total: countRow[0]?.total || 0,
+    }});
   } catch (e) {
-    res.json({ code: 500, msg: '获取失败' });
+    logger.error('[Live] speech error', { error: e.message });
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+router.get('/rooms/:id/products', auth(), async (req, res) => {
+  try {
+    // 优先从 live_products 表读取
+    const [products] = await db.query(
+      `SELECT * FROM live_products WHERE room_id = ? AND status = 1 ORDER BY pay_amount DESC`,
+      [req.params.id]
+    );
+    if (products.length > 0) {
+      return res.json({ code: 0, data: products });
+    }
+
+    // live_products 为空时，从 qc_daily_stats 聚合素材数据作为替代展示
+    const today = dayjs().format('YYYY-MM-DD');
+    const [statsRows] = await db.query(
+      `SELECT entity_name as product_name, '' as product_img,
+              ROUND(SUM(cpm) / GREATEST(SUM(convert_cnt), 1), 2) as price,
+              SUM(click_cnt) as click_count, SUM(convert_cnt) as order_count,
+              CAST(SUM(cpm) AS DECIMAL(12,2)) as pay_amount,
+              CASE WHEN SUM(show_cnt) > 0 THEN CONCAT(ROUND(SUM(click_cnt)/SUM(show_cnt)*100, 1), '%') ELSE '0%' END as click_cvr,
+              CASE WHEN SUM(click_cnt) > 0 THEN CONCAT(ROUND(SUM(convert_cnt)/SUM(click_cnt)*100, 1), '%') ELSE '0%' END as pay_cvr,
+              1 as status
+       FROM qc_daily_stats
+       WHERE stat_date = ? AND entity_name IS NOT NULL AND entity_name != ''
+       GROUP BY entity_name
+       HAVING SUM(convert_cnt) > 0
+       ORDER BY SUM(cpm) DESC LIMIT 20`,
+      [today]
+    );
+    res.json({ code: 0, data: statsRows || [] });
+  } catch (e) {
+    logger.error('获取商品列表失败', { error: e.message });
+    res.json({ code: 0, data: [] });
   }
 });
 
@@ -330,20 +485,66 @@ router.get('/rooms/:id/speech', auth(), async (req, res) => {
 
 router.get('/rooms/:id/danmaku', auth(), async (req, res) => {
   try {
-    const { limit = 100 } = req.query;
-    const [rows] = await db.query(
-      `SELECT * FROM live_danmaku WHERE room_id = ? ORDER BY recorded_at DESC LIMIT ?`,
-      [req.params.id, parseInt(limit)]
+    const roomId = req.params.id;
+    // 从话术记录中分析生成弹幕分析数据
+    const [speeches] = await db.query(
+      'SELECT text_content, category, recorded_at FROM live_speech_records WHERE room_id = ? ORDER BY recorded_at DESC LIMIT 50',
+      [roomId]
     );
-    res.json({ code: 0, data: rows });
+
+    // 热门话题：从话术分类统计
+    const categoryMap = {};
+    const categoryLabel = { selling_point: '卖点讲解', push_sale: '逼单促单', welfare: '福利发放', interact: '互动留人', product_intro: '产品介绍', other: '其他' };
+    speeches.forEach(s => {
+      const label = categoryLabel[s.category] || '其他';
+      categoryMap[label] = (categoryMap[label] || 0) + 1;
+    });
+    const hot_topics = Object.entries(categoryMap)
+      .sort((a, b) => b[1] - a[1])
+      .map(([text, count]) => ({ text, count, heat: count * 20 }));
+
+    // 用户关注点：从话术文本提取高频词
+    const allText = speeches.map(s => s.text_content || '').join(' ');
+    const wordMap = {};
+    allText.split(/[\s,.\u3002\uff0c\uff01\uff1f\u3001]+/).filter(w => w.length >= 2 && w.length <= 6).forEach(w => {
+      wordMap[w] = (wordMap[w] || 0) + 1;
+    });
+    const questions = Object.entries(wordMap)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([text, count]) => ({ text, count }));
+
+    // 情感分析：基于话术分类推算
+    const positive = speeches.filter(s => ['selling_point', 'product_intro', 'welfare'].includes(s.category)).length;
+    const neutral = speeches.filter(s => ['interact', 'other'].includes(s.category)).length;
+    const negative = speeches.filter(s => s.category === 'push_sale').length;
+    const total = positive + neutral + negative || 1;
+    const sentiment = [
+      { name: '正面', value: Math.round(positive / total * 100), color: '#52c41a' },
+      { name: '中性', value: Math.round(neutral / total * 100), color: '#1890ff' },
+      { name: '负面', value: Math.round(negative / total * 100), color: '#ff4d4f' },
+    ];
+
+    // 弹幕列表（从ops_comment_logs补充）
+    let danmakuList = [];
+    try {
+      const [comments] = await db.query(
+        'SELECT douyin_nickname, original_comment, created_at FROM ops_comment_logs WHERE original_comment IS NOT NULL AND original_comment != "" ORDER BY created_at DESC LIMIT 50'
+      );
+      danmakuList = comments.map(c => ({
+        user: c.douyin_nickname || '观众',
+        text: c.original_comment,
+        time: c.created_at,
+      }));
+    } catch (e) {}
+
+    res.json({ code: 0, data: { hot_topics, questions, sentiment, list: danmakuList, total: speeches.length } });
   } catch (e) {
-    res.json({ code: 500, msg: '获取失败' });
+    logger.error('[Live] danmaku analysis error', { error: e.message });
+    res.json({ code: 500, msg: e.message });
   }
 });
 
-// ============ 异常预警 ============
-
-// 获取预警列表
 router.get('/alerts', auth(), async (req, res) => {
   try {
     const { status, level, page = 1, pageSize = 20 } = req.query;
@@ -501,19 +702,76 @@ router.delete('/competitors/:id', auth(), async (req, res) => {
 router.get('/sessions', auth(), async (req, res) => {
   try {
     const { room_id, date } = req.query;
-    let sql = `SELECT ls.*, lr.nickname as room_name FROM live_sessions ls LEFT JOIN live_rooms lr ON ls.room_id = lr.id WHERE 1=1`;
-    const params = [];
-    if (room_id) { sql += ` AND ls.room_id = ?`; params.push(room_id); }
-    if (date) { sql += ` AND DATE(ls.start_time) = ?`; params.push(date); }
-    sql += ` ORDER BY ls.start_time DESC LIMIT 20`;
-    const [rows] = await db.query(sql, params);
-    res.json({ code: 0, data: rows });
+    const roomFilter = room_id || 1;
+
+    // 如果指定了日期，先查session表，没有则从realtime自动汇总
+    if (date) {
+      const [existing] = await db.query(
+        'SELECT ls.*, lr.nickname as room_name FROM live_sessions ls LEFT JOIN live_rooms lr ON ls.room_id = lr.id WHERE ls.room_id = ? AND DATE(ls.start_time) = ?',
+        [roomFilter, date]
+      );
+      if (existing.length) return res.json({ code: 0, data: existing });
+
+      // 从realtime自动汇总
+      const [summary] = await db.query(
+        `SELECT MIN(recorded_at) as start_time, MAX(recorded_at) as end_time,
+         TIMESTAMPDIFF(SECOND, MIN(recorded_at), MAX(recorded_at)) as duration_seconds,
+         MAX(total_viewers) as total_viewers, MAX(peak_count) as peak_online,
+         MAX(CAST(gmv AS DECIMAL(12,2))) as total_gmv, MAX(order_count) as total_orders,
+         AVG(avg_stay_seconds) as avg_stay_seconds,
+         MAX(CAST(qianchuan_cost AS DECIMAL(12,2))) as total_qianchuan_cost,
+         MAX(CAST(qianchuan_roi AS DECIMAL(5,2))) as overall_roi,
+         COUNT(*) as data_points
+         FROM live_realtime_data WHERE room_id = ? AND DATE(recorded_at) = ?`,
+        [roomFilter, date]
+      );
+      if (summary[0] && summary[0].data_points > 0) {
+        const s = summary[0];
+        const [room] = await db.query('SELECT nickname FROM live_rooms WHERE id = ?', [roomFilter]);
+        return res.json({ code: 0, data: [{
+          id: 0, room_id: parseInt(roomFilter), start_time: s.start_time, end_time: s.end_time,
+          duration_seconds: s.duration_seconds || 0, total_viewers: s.total_viewers || 0,
+          peak_online: s.peak_online || 0, total_gmv: s.total_gmv || 0,
+          total_orders: s.total_orders || 0, avg_stay_seconds: Math.round(s.avg_stay_seconds || 0),
+          total_qianchuan_cost: s.total_qianchuan_cost || 0, overall_roi: s.overall_roi || 0,
+          ai_summary: `直播时长${Math.round((s.duration_seconds || 0) / 3600)}小时, 成交${s.total_orders || 0}单, GMV ¥${((s.total_gmv || 0) / 10000).toFixed(1)}万`,
+          status: 'ended', room_name: room[0]?.nickname || '',
+        }]});
+      }
+      return res.json({ code: 0, data: [] });
+    }
+
+    // 不指定日期：返回所有有数据的天（从realtime汇总）
+    const [days] = await db.query(
+      `SELECT DATE(recorded_at) as day,
+       MIN(recorded_at) as start_time, MAX(recorded_at) as end_time,
+       TIMESTAMPDIFF(SECOND, MIN(recorded_at), MAX(recorded_at)) as duration_seconds,
+       MAX(total_viewers) as total_viewers, MAX(peak_count) as peak_online,
+       MAX(CAST(gmv AS DECIMAL(12,2))) as total_gmv, MAX(order_count) as total_orders,
+       AVG(avg_stay_seconds) as avg_stay_seconds,
+       MAX(CAST(qianchuan_cost AS DECIMAL(12,2))) as total_qianchuan_cost,
+       MAX(CAST(qianchuan_roi AS DECIMAL(5,2))) as overall_roi
+       FROM live_realtime_data WHERE room_id = ?
+       GROUP BY DATE(recorded_at) ORDER BY day DESC LIMIT 30`,
+      [roomFilter]
+    );
+    const [room] = await db.query('SELECT nickname FROM live_rooms WHERE id = ?', [roomFilter]);
+    const result = days.map((d, i) => ({
+      id: i + 1, room_id: parseInt(roomFilter), start_time: d.start_time, end_time: d.end_time,
+      duration_seconds: d.duration_seconds || 0, total_viewers: d.total_viewers || 0,
+      peak_online: d.peak_online || 0, total_gmv: d.total_gmv || 0,
+      total_orders: d.total_orders || 0, avg_stay_seconds: Math.round(d.avg_stay_seconds || 0),
+      total_qianchuan_cost: d.total_qianchuan_cost || 0, overall_roi: d.overall_roi || 0,
+      ai_summary: `直播时长${Math.round((d.duration_seconds || 0) / 3600)}小时, 成交${d.total_orders || 0}单, GMV ¥${((d.total_gmv || 0) / 10000).toFixed(1)}万, ROI ${d.overall_roi || '--'}`,
+      status: 'ended', room_name: room[0]?.nickname || '',
+    }));
+    res.json({ code: 0, data: result });
   } catch (e) {
-    res.json({ code: 500, msg: '获取失败' });
+    logger.error('[Live] sessions error', { error: e.message });
+    res.json({ code: 500, msg: e.message });
   }
 });
 
-// 获取账号列表（用于评论功能）
 router.get('/accounts', auth(), async (req, res) => {
   try {
     const [rows] = await db.query(`SELECT * FROM ops_douyin_accounts WHERE status = 'active'`);
@@ -693,6 +951,98 @@ router.get('/stream-proxy', auth(), async (req, res) => {
     r.data.pipe(res);
   } catch (e) {
     res.status(502).send('Stream proxy error');
+  }
+});
+
+router.get('/comment-logs', auth(), async (req, res) => {
+  try {
+    const { category, page = 1, pageSize = 50 } = req.query;
+    let sql = `SELECT * FROM ops_comment_logs WHERE 1=1`;
+    const params = [];
+    if (category) {
+      sql += ` AND ai_category = ?`;
+      params.push(category);
+    }
+    sql += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`;
+    params.push(parseInt(pageSize), (parseInt(page) - 1) * parseInt(pageSize));
+    const [rows] = await db.query(sql, params);
+
+    let countSql = `SELECT COUNT(*) as total FROM ops_comment_logs WHERE 1=1`;
+    const countParams = [];
+    if (category) {
+      countSql += ` AND ai_category = ?`;
+      countParams.push(category);
+    }
+    const [countRows] = await db.query(countSql, countParams);
+
+    res.json({ code: 0, data: { list: rows, total: countRows[0]?.total || 0 } });
+  } catch (e) {
+    logger.error('获取评论日志失败', { error: e.message });
+    res.json({ code: 500, msg: '获取失败' });
+  }
+});
+
+// 获取评论统计数据
+router.get('/comment-stats', auth(), async (req, res) => {
+  try {
+    const today = dayjs().format('YYYY-MM-DD');
+
+    const [totalRows] = await db.query(
+      `SELECT COUNT(*) as total FROM ops_comment_logs WHERE DATE(created_at) = ?`, [today]
+    );
+    const [aiRows] = await db.query(
+      `SELECT COUNT(*) as total FROM ops_comment_logs WHERE DATE(created_at) = ? AND reply_content IS NOT NULL AND reply_content != ''`, [today]
+    );
+    const [successRows] = await db.query(
+      `SELECT COUNT(*) as total FROM ops_comment_logs WHERE DATE(created_at) = ? AND status = 'success'`, [today]
+    );
+    const [categoryRows] = await db.query(
+      `SELECT ai_category, COUNT(*) as cnt FROM ops_comment_logs WHERE DATE(created_at) = ? GROUP BY ai_category`, [today]
+    );
+    const [publisherRows] = await db.query(
+      `SELECT publisher_name, COUNT(*) as today_count,
+       SUM(CASE WHEN reply_content IS NOT NULL AND reply_content != '' THEN 1 ELSE 0 END) as ai_count,
+       ROUND(SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) / COUNT(*) * 100, 1) as success_rate
+       FROM ops_comment_logs WHERE DATE(created_at) = ?
+       GROUP BY publisher_name, publisher_id
+       ORDER BY today_count DESC`, [today]
+    );
+    const [trendRows] = await db.query(
+      `SELECT DATE_FORMAT(created_at, '%m-%d') as day,
+       COUNT(*) as total,
+       SUM(CASE WHEN reply_content IS NOT NULL AND reply_content != '' THEN 1 ELSE 0 END) as ai_replies,
+       ROUND(SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) / COUNT(*) * 100, 1) as success_rate
+       FROM ops_comment_logs
+       WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+       GROUP BY DATE_FORMAT(created_at, '%m-%d')
+       ORDER BY day`
+    );
+
+    const totalToday = totalRows[0]?.total || 0;
+    const aiReplies = aiRows[0]?.total || 0;
+    const successCount = successRows[0]?.total || 0;
+    const successRate = totalToday > 0 ? (successCount / totalToday * 100).toFixed(1) : '0';
+
+    res.json({
+      code: 0,
+      data: {
+        total_today: totalToday,
+        ai_replies: aiReplies,
+        success_rate: successRate,
+        categories: categoryRows,
+        publishers: publisherRows.map((r, i) => ({
+          key: i + 1,
+          account: r.publisher_name || '未知',
+          today: r.today_count,
+          ai: r.ai_count,
+          success: r.success_rate + '%',
+        })),
+        trend: trendRows,
+      }
+    });
+  } catch (e) {
+    logger.error('获取评论统计失败', { error: e.message });
+    res.json({ code: 500, msg: '获取失败' });
   }
 });
 

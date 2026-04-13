@@ -66,20 +66,29 @@ router.post('/analyze', auth(), async (req, res) => {
     // 1. 取近7天高消耗+高CTR素材Top30
     const weekStart = dayjs().subtract(7, 'day').format('YYYY-MM-DD');
     const today = dayjs().format('YYYY-MM-DD');
+    const aw = req.accWhere || '';
+    const ap = req.accParams || [];
     const [topMaterials] = await db.query(
       `SELECT title, SUM(cost) AS cost,
         CASE WHEN SUM(product_show_count)>0 THEN SUM(product_click_count)/SUM(product_show_count)*100 ELSE 0 END AS ctr,
         CASE WHEN SUM(cost)>0 THEN SUM(pay_order_amount)/SUM(cost) ELSE 0 END AS roi
-       FROM qc_material_stats WHERE stat_date BETWEEN ? AND ? AND cost > 0
+       FROM qc_material_stats WHERE stat_date BETWEEN ? AND ? AND cost > 0${aw}
        GROUP BY title ORDER BY SUM(cost) DESC LIMIT 30`,
-      [weekStart, today]
+      [weekStart, today, ...ap]
     );
 
     if (topMaterials.length === 0) return res.json({ code: 400, msg: '暂无素材数据' });
 
-    // 2. 取人群画像
+    // 2. 取人群画像（使用RBAC账户过滤）
+    let audWhere = "dimension IN ('gender','age')";
+    let audParams = [];
+    if (req.accountFilter) {
+      audWhere += ' AND advertiser_id IN (' + req.accountFilter.map(() => '?').join(',') + ')';
+      audParams = [...req.accountFilter];
+    }
     const [audience] = await db.query(
-      `SELECT dimension, dimension_key, pay_order_count FROM qc_audience_stats WHERE advertiser_id='1842321714551812' AND dimension IN ('gender','age') ORDER BY pay_order_count DESC`
+      `SELECT dimension, dimension_key, SUM(pay_order_count) AS pay_order_count FROM qc_audience_stats WHERE ${audWhere} GROUP BY dimension, dimension_key ORDER BY pay_order_count DESC`,
+      audParams
     );
     const genderInfo = audience.filter(a => a.dimension === 'gender').map(a => `${a.dimension_key}${a.pay_order_count}`).join('、');
     const ageInfo = audience.filter(a => a.dimension === 'age').slice(0, 3).map(a => a.dimension_key).join('、');

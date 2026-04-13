@@ -9,6 +9,12 @@ const axios = require('axios');
 router.get('/', auth(), async (req, res) => {
   const today = dayjs().format('YYYY-MM-DD');
   try {
+    let accFilter = '';
+    const accP = [today];
+    if (req.accountFilter) {
+      accFilter = ' AND a.advertiser_id IN (' + req.accountFilter.map(() => '?').join(',') + ')';
+      accP.push(...req.accountFilter);
+    }
     const [rows] = await db.query(
       `SELECT a.advertiser_id, a.advertiser_name, a.status, a.account_type, a.last_sync_at,
         COALESCE(s.cost,0) AS today_cost,
@@ -21,8 +27,9 @@ router.get('/', auth(), async (req, res) => {
        FROM qc_accounts a
        LEFT JOIN qc_daily_stats s ON a.advertiser_id=s.entity_id
          AND s.stat_date=? AND s.entity_type='account'
+       WHERE 1=1${accFilter}
        ORDER BY COALESCE(s.cost,0) DESC`,
-      [today]
+      accP
     );
     res.json({ code: 0, data: { list: rows } });
   } catch (e) {
@@ -34,6 +41,9 @@ router.get('/', auth(), async (req, res) => {
 // 账户7天趋势
 router.get('/:advertiser_id/trend', auth(), async (req, res) => {
   const { advertiser_id } = req.params;
+  if (req.accountFilter && !req.accountFilter.includes(advertiser_id)) {
+    return res.json({ code: 403, msg: '无权访问该账户' });
+  }
   const endDate = dayjs().format('YYYY-MM-DD');
   const startDate = dayjs().subtract(6, 'day').format('YYYY-MM-DD');
   try {
@@ -55,23 +65,88 @@ router.get('/:advertiser_id/trend', auth(), async (req, res) => {
     const dateMap = {};
     rows.forEach(r => { dateMap[dayjs(r.stat_date).format('MM-DD')] = r; });
 
+    // 从material_stats获取真实的曝光/点击数据
+    const [matRows] = await db.query(
+      `SELECT DATE_FORMAT(stat_date, '%m-%d') AS d, SUM(show_cnt) AS show_cnt, SUM(click_cnt) AS click_cnt
+       FROM qc_material_stats WHERE advertiser_id=? AND stat_date BETWEEN ? AND ?
+       GROUP BY stat_date`,
+      [advertiser_id, startDate, endDate]
+    );
+    const matMap = {};
+    matRows.forEach(r => { matMap[r.d] = r; });
+
     const dates = [], cost = [], gmv = [], orders = [], roi = [], show = [], click = [];
     for (let i = 0; i < 7; i++) {
       const d = dayjs().subtract(6 - i, 'day');
       const key = d.format('MM-DD');
       const r = dateMap[key] || {};
+      const m = matMap[key] || {};
       dates.push(key);
       cost.push(parseFloat(r.cost || 0));
       gmv.push(parseFloat(r.gmv || 0));
       orders.push(parseInt(r.orders || 0));
       roi.push(parseFloat(r.roi || 0));
-      show.push(parseInt(r.show_cnt || 0));
-      click.push(parseInt(r.click_cnt || 0));
+      show.push(parseInt(m.show_cnt || r.show_cnt || 0));
+      click.push(parseInt(m.click_cnt || r.click_cnt || 0));
     }
 
     res.json({ code: 0, data: { dates, cost, gmv, orders, roi, show, click } });
   } catch (e) {
     logger.error('[Accounts] 趋势查询失败', { error: e.message });
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// 账户今日vs昨日详情
+router.get('/:advertiser_id/detail', auth(), async (req, res) => {
+  const { advertiser_id } = req.params;
+  if (req.accountFilter && !req.accountFilter.includes(advertiser_id)) {
+    return res.json({ code: 403, msg: '无权访问该账户' });
+  }
+  const today = dayjs().format('YYYY-MM-DD');
+  const yesterday = dayjs().subtract(1, 'day').format('YYYY-MM-DD');
+  try {
+    // 今日数据 (campaign级汇总)
+    const [[todayData]] = await db.query(
+      `SELECT COALESCE(SUM(cost),0) AS cost, COALESCE(SUM(cpm),0) AS gmv,
+        COALESCE(SUM(convert_cnt),0) AS orders
+       FROM qc_daily_stats WHERE advertiser_id=? AND stat_date=? AND entity_type='campaign'`,
+      [advertiser_id, today]
+    );
+    // 今日素材级
+    const [[todayMat]] = await db.query(
+      `SELECT COALESCE(SUM(show_cnt),0) AS show_cnt, COALESCE(SUM(click_cnt),0) AS click_cnt
+       FROM qc_material_stats WHERE advertiser_id=? AND stat_date=?`,
+      [advertiser_id, today]
+    );
+    // 昨日数据
+    const [[ydData]] = await db.query(
+      `SELECT COALESCE(SUM(cost),0) AS cost, COALESCE(SUM(cpm),0) AS gmv,
+        COALESCE(SUM(convert_cnt),0) AS orders
+       FROM qc_daily_stats WHERE advertiser_id=? AND stat_date=? AND entity_type='campaign'`,
+      [advertiser_id, yesterday]
+    );
+    const [[ydMat]] = await db.query(
+      `SELECT COALESCE(SUM(show_cnt),0) AS show_cnt, COALESCE(SUM(click_cnt),0) AS click_cnt
+       FROM qc_material_stats WHERE advertiser_id=? AND stat_date=?`,
+      [advertiser_id, yesterday]
+    );
+    
+    const fmt = (d, m) => {
+      const cost = parseFloat(d?.cost||0), gmv = parseFloat(d?.gmv||0);
+      const orders = parseInt(d?.orders||0);
+      const show = parseInt(m?.show_cnt||0), click = parseInt(m?.click_cnt||0);
+      return {
+        cost, gmv, orders, show_cnt: show, click_cnt: click,
+        roi: cost > 0 ? parseFloat((gmv/cost).toFixed(2)) : 0,
+        ctr: show > 0 ? parseFloat(((click/show)*100).toFixed(2)) : 0,
+        cvr: click > 0 ? parseFloat(((orders/click)*100).toFixed(2)) : 0,
+        avg_cost: orders > 0 ? parseFloat((cost/orders).toFixed(2)) : 0
+      };
+    };
+    
+    res.json({ code: 0, data: { today: fmt(todayData, todayMat), yesterday: fmt(ydData, ydMat) } });
+  } catch (e) {
     res.json({ code: 500, msg: e.message });
   }
 });
@@ -126,5 +201,8 @@ ${trend ? `近7天趋势：
     res.json({ code: 500, msg: 'AI分析失败: ' + e.message });
   }
 });
+
+// 挂载OAuth授权路由
+require("./oauth")(router);
 
 module.exports = router;
