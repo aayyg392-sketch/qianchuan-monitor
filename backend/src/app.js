@@ -58,13 +58,23 @@ app.use("/api/ks-reviews", require("./routes/ks-reviews"));
 app.use("/api/ks-ad", require("./routes/ks-ad"));
 app.use("/api/ks-ad-dash", require("./routes/ks-ad-dashboard"));
 app.use("/api/ks-pitcher", require("./routes/ks-ad-pitcher"));
+app.use("/api/ks-ad-comments", require("./routes/ks-ad-comments"));
 app.use("/api/ks-live", require("./routes/ks-live-analytics"));
+app.use("/api/rbac", require("./routes/rbac"));
+// 腾讯广告ADQ模块
+app.use('/api/adq', require('./routes/adq'));
+app.use('/api/adq-dash', require('./routes/adq-dashboard'));
+app.use('/api/adq-comments', require('./routes/adq-comments'));
+app.use('/api/adq-pitcher', require('./routes/adq-pitcher'));
 // 跨境TikTok模块（独立路由组）
 app.use('/api/tiktok', require('./routes/tiktok'));
 app.use('/api/tt-materials', require('./routes/tt-materials'));
 app.use('/api/tt-push', require('./routes/tt-push'));
 app.use('/api/tt-stats', require('./routes/tt-stats'));
 app.use('/api/tt-dashboard', require('./routes/tt-dashboard'));
+// 素材分析模块
+app.use('/api/material-analysis', require('./routes/material-analysis'));
+app.use('/api/material-analysis', require('./routes/ctr-analysis'));
 // TikTok素材静态文件
 app.use('/tt-materials', express.static('/home/www/qianchuan-monitor/tt-materials'));
 

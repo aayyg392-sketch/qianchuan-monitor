@@ -1,0 +1,26 @@
+# 千川监控平台 - 代码负责人分工
+# 公共模块改动需要管理员审核
+
+# 核心配置和入口
+/backend/src/app.js           @aayyg392-sketch
+/backend/.env                 @aayyg392-sketch
+/frontend/src/router/         @aayyg392-sketch
+
+# 千川模块
+/backend/src/services/sync.js         @aayyg392-sketch
+/backend/src/services/qianchuan.js    @aayyg392-sketch
+/backend/src/routes/dashboard.js      @aayyg392-sketch
+/backend/src/routes/campaigns.js      @aayyg392-sketch
+
+# 快手模块
+/backend/src/services/ks-*.js         @aayyg392-sketch
+/backend/src/routes/ks-*.js           @aayyg392-sketch
+
+# 腾讯广告ADQ模块
+/backend/src/services/adq-*.js        @aayyg392-sketch
+/backend/src/routes/adq*.js           @aayyg392-sketch
+/frontend/src/views/Adq*.vue          @aayyg392-sketch
+
+# TikTok跨境模块
+/backend/src/routes/tiktok*.js        @aayyg392-sketch
+/backend/src/routes/tt-*.js           @aayyg392-sketch
