@@ -46,8 +46,14 @@
           <div class="pnl-hd"><i class="dot cyan"></i>ADQ账户AI接管<div class="hd-line"></div></div>
           <div class="pnl-bd scroll-y">
             <div class="empty" v-if="!adqAccounts.length">暂无ADQ账户</div>
-            <div class="acc" v-for="a in adqAccounts" :key="a.id" @click="toggleAiTakeover(a)">
-              <div class="acc-l"><div class="acc-dot" :class="{on:a.aiEnabled}"></div><div><div class="acc-n">{{ a.account_name||a.app_id||'账户'+a.id }}</div><div class="acc-id">{{ a.account_id||a.id }}</div></div></div>
+            <div class="acc" v-for="a in adqAccounts" :key="a.id" @click="onAccClick(a)">
+              <div class="acc-l">
+                <div class="acc-dot" :class="{on:a.aiEnabled}"></div>
+                <div>
+                  <div class="acc-n">ADQ-{{ a.account_id }}</div>
+                  <div class="acc-id">{{ (a.account_name||'').slice(0,6) }} | {{ a.aiEnabled && a.aiConfig ? 'ROI:'+a.aiConfig.targetROI+' 日耗:'+a.aiConfig.dailySpendTarget : '未设目标' }}</div>
+                </div>
+              </div>
               <div class="sw" :class="{on:a.aiEnabled}"><div class="sw-t"><div class="sw-b"></div></div><span>{{ a.aiEnabled?'AI':'OFF' }}</span></div>
             </div>
           </div>
@@ -196,6 +202,55 @@
         </div>
       </div>
     </Teleport>
+    <!-- AI接管目标设置弹窗 -->
+    <Teleport to="body">
+      <div class="modal-mask" v-if="showTakeover" @click.self="showTakeover=false">
+        <div class="modal-box takeover-box">
+          <div class="modal-t">{{ takeoverAcc?.aiEnabled ? 'AI接管设置' : '开启AI接管' }}</div>
+          <div class="tk-acc">ADQ-{{ takeoverAcc?.account_id }}</div>
+          <div class="tk-form">
+            <div class="tk-row">
+              <label>ROI目标</label>
+              <div class="tk-input-wrap">
+                <input v-model.number="takeoverForm.targetROI" type="number" step="0.1" class="si" placeholder="如 2.0">
+                <span class="tk-unit">倍</span>
+              </div>
+              <div class="tk-hint">AI将自动调整出价确保ROI达标</div>
+            </div>
+            <div class="tk-row">
+              <label>今日消耗目标</label>
+              <div class="tk-input-wrap">
+                <input v-model.number="takeoverForm.dailySpendTarget" type="number" class="si" placeholder="如 5000">
+                <span class="tk-unit">元</span>
+              </div>
+              <div class="tk-hint">AI会匀速消耗，避免超支或花不完</div>
+            </div>
+            <div class="tk-row">
+              <label>目标CPA</label>
+              <div class="tk-input-wrap">
+                <input v-model.number="takeoverForm.targetCPA" type="number" class="si" placeholder="如 50">
+                <span class="tk-unit">元</span>
+              </div>
+              <div class="tk-hint">单次转化成本上限，超2倍自动关停</div>
+            </div>
+            <div class="tk-divider"></div>
+            <div class="tk-switches">
+              <label class="tk-sw-row"><input type="checkbox" v-model="takeoverForm.enableBidAdjust"><span>自动调价</span></label>
+              <label class="tk-sw-row"><input type="checkbox" v-model="takeoverForm.enableBudgetPace"><span>预算匀速</span></label>
+              <label class="tk-sw-row"><input type="checkbox" v-model="takeoverForm.enableMaterialRotate"><span>素材轮换</span></label>
+              <label class="tk-sw-row"><input type="checkbox" v-model="takeoverForm.enableAnomalyAlert"><span>异常预警</span></label>
+            </div>
+          </div>
+          <div class="tk-actions">
+            <button class="run-btn" v-if="takeoverAcc?.aiEnabled" @click="updateTakeover" style="background:rgba(0,240,255,.08)">保存设置</button>
+            <button class="run-btn" v-else @click="confirmTakeover" style="background:rgba(0,255,136,.08);border-color:rgba(0,255,136,.3);color:#00ff88">开启AI接管</button>
+            <button class="run-btn" v-if="takeoverAcc?.aiEnabled" @click="closeTakeover" style="border-color:rgba(255,77,106,.3);color:#ff4d6a">关闭AI接管</button>
+            <button class="run-btn" @click="showTakeover=false" style="opacity:.5">取消</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
     <router-link to="/dashboard" class="back-link">&laquo; 返回</router-link>
   </div>
 </template>
@@ -221,6 +276,10 @@ let timeTimer = null, refreshTimer = null, animFrame = null
 const rules = ref([])
 const ruleTemplates = ref([])
 const showTemplates = ref(false)
+
+const showTakeover = ref(false)
+const takeoverAcc = ref(null)
+const takeoverForm = reactive({ targetROI: 2.0, dailySpendTarget: 5000, targetCPA: 50, enableBidAdjust: true, enableBudgetPace: true, enableMaterialRotate: true, enableAnomalyAlert: true })
 
 const simMode = ref('bid')
 const simLoading = ref(false)
@@ -285,8 +344,54 @@ async function loadOverview(){try{const r=await request.get('/ai-engine/dashboar
 async function loadRecentDecisions(){try{const r=await request.get('/ai-engine/dashboard/decisions',{params:{platform:'adq',page:1,page_size:10}});recentDecisions.value=r.data.list||[]}catch{}}
 async function loadRules(){try{const r=await request.get('/ai-engine/rules/list');rules.value=r.data||[]}catch{}}
 async function loadTemplates(){try{const r=await request.get('/ai-engine/rules/templates');ruleTemplates.value=r.data||[]}catch{}}
-async function loadAdqAccounts(){try{const res=await request.get('/adq/accounts');const accounts=res.data||[];const rulesRes=await request.get('/ai-engine/rules/list');const aiRules=(rulesRes.data||[]).filter(r=>r.rule_type==='ai_takeover'&&r.is_active);const aiIds=new Set(aiRules.map(r=>{const c=typeof r.rule_config==='string'?JSON.parse(r.rule_config):r.rule_config;return String(c?.accountDbId||'')}));adqAccounts.value=accounts.map(a=>({...a,aiEnabled:aiIds.has(String(a.id))}))}catch{}}
-async function toggleAiTakeover(acc){try{if(acc.aiEnabled){const rulesRes=await request.get('/ai-engine/rules/list');const rule=(rulesRes.data||[]).find(r=>{if(r.rule_type!=='ai_takeover')return false;const c=typeof r.rule_config==='string'?JSON.parse(r.rule_config):r.rule_config;return String(c?.accountDbId)===String(acc.id)});if(rule)await request.delete(`/ai-engine/rules/${rule.id}`);acc.aiEnabled=false;message.success('已关闭AI接管')}else{await request.post('/ai-engine/rules/create',{platform:'adq',rule_name:`AI接管-${acc.account_name||acc.id}`,rule_type:'ai_takeover',rule_config:{accountDbId:acc.id,accountId:acc.account_id,enableBidAdjust:true,enableMaterialRotate:true,enableBudgetPace:true,enableAnomalyAlert:true,targetCPA:50}});acc.aiEnabled=true;message.success('AI接管已开启')}}catch{message.error('操作失败')}}
+async function loadAdqAccounts(){try{const res=await request.get('/adq/accounts');const accounts=res.data||[];const rulesRes=await request.get('/ai-engine/rules/list');const aiRules=(rulesRes.data||[]).filter(r=>r.rule_type==='ai_takeover'&&r.is_active);const aiMap={};aiRules.forEach(r=>{const c=typeof r.rule_config==='string'?JSON.parse(r.rule_config):r.rule_config;if(c?.accountDbId)aiMap[String(c.accountDbId)]=c});adqAccounts.value=accounts.map(a=>({...a,aiEnabled:!!aiMap[String(a.id)],aiConfig:aiMap[String(a.id)]||null}))}catch{}}
+function onAccClick(acc) {
+  takeoverAcc.value = acc
+  if (acc.aiEnabled && acc.aiConfig) {
+    takeoverForm.targetROI = acc.aiConfig.targetROI || 2.0
+    takeoverForm.dailySpendTarget = acc.aiConfig.dailySpendTarget || 5000
+    takeoverForm.targetCPA = acc.aiConfig.targetCPA || 50
+    takeoverForm.enableBidAdjust = acc.aiConfig.enableBidAdjust !== false
+    takeoverForm.enableBudgetPace = acc.aiConfig.enableBudgetPace !== false
+    takeoverForm.enableMaterialRotate = acc.aiConfig.enableMaterialRotate !== false
+    takeoverForm.enableAnomalyAlert = acc.aiConfig.enableAnomalyAlert !== false
+  } else {
+    takeoverForm.targetROI = 2.0; takeoverForm.dailySpendTarget = 5000; takeoverForm.targetCPA = 50
+    takeoverForm.enableBidAdjust = true; takeoverForm.enableBudgetPace = true
+    takeoverForm.enableMaterialRotate = true; takeoverForm.enableAnomalyAlert = true
+  }
+  showTakeover.value = true
+}
+async function confirmTakeover() {
+  const acc = takeoverAcc.value; if (!acc) return
+  try {
+    await request.post('/ai-engine/rules/create', { platform:'adq', rule_name:`AI接管-ADQ${acc.account_id}`, rule_type:'ai_takeover', rule_config: { accountDbId:acc.id, accountId:acc.account_id, ...takeoverForm } })
+    acc.aiEnabled = true; acc.aiConfig = { ...takeoverForm }
+    message.success('AI接管已开启'); showTakeover.value = false
+  } catch { message.error('操作失败') }
+}
+async function updateTakeover() {
+  const acc = takeoverAcc.value; if (!acc) return
+  try {
+    const rulesRes = await request.get('/ai-engine/rules/list')
+    const rule = (rulesRes.data||[]).find(r => { if(r.rule_type!=='ai_takeover') return false; const c=typeof r.rule_config==='string'?JSON.parse(r.rule_config):r.rule_config; return String(c?.accountDbId)===String(acc.id) })
+    if (rule) {
+      await request.put(`/ai-engine/rules/${rule.id}`, { rule_config: { accountDbId:acc.id, accountId:acc.account_id, ...takeoverForm } })
+    }
+    acc.aiConfig = { ...takeoverForm }
+    message.success('目标已更新'); showTakeover.value = false
+  } catch { message.error('更新失败') }
+}
+async function closeTakeover() {
+  const acc = takeoverAcc.value; if (!acc) return
+  try {
+    const rulesRes = await request.get('/ai-engine/rules/list')
+    const rule = (rulesRes.data||[]).find(r => { if(r.rule_type!=='ai_takeover') return false; const c=typeof r.rule_config==='string'?JSON.parse(r.rule_config):r.rule_config; return String(c?.accountDbId)===String(acc.id) })
+    if (rule) await request.delete(`/ai-engine/rules/${rule.id}`)
+    acc.aiEnabled = false; acc.aiConfig = null
+    message.success('已关闭AI接管'); showTakeover.value = false
+  } catch { message.error('操作失败') }
+}
 async function createFromTemplate(tpl){try{await request.post('/ai-engine/rules/create',{platform:tpl.config?.platform||'adq',rule_name:tpl.name,rule_type:tpl.type,rule_config:tpl.config});message.success('创建成功');showTemplates.value=false;loadRules()}catch{}}
 async function toggleRule(r){try{await request.post(`/ai-engine/rules/toggle/${r.id}`);r.is_active=r.is_active?0:1}catch{}}
 async function deleteRule(id){try{await request.delete(`/ai-engine/rules/${id}`);rules.value=rules.value.filter(r=>r.id!==id)}catch{}}
@@ -507,6 +612,24 @@ onUnmounted(()=>{clearInterval(timeTimer);clearInterval(refreshTimer);if(animFra
 .tpl:hover{border-color:rgba(0,240,255,.2)}
 .tpl-n{font-size:11px;color:#fff;font-weight:600}
 .tpl-d{font-size:9px;color:rgba(200,210,220,.3);margin-top:2px}
+
+/* 接管抽屉 */
+.takeover-box{position:fixed !important;right:0;top:0;bottom:0;width:340px;max-width:90vw;max-height:100vh !important;border-radius:0;border:none;border-left:1px solid rgba(0,240,255,.15);animation:slideInRight .3s ease}
+@keyframes slideInRight{from{transform:translateX(100%)}to{transform:translateX(0)}}
+.tk-acc{font-size:16px;font-weight:800;color:#00f0ff;text-align:center;margin-bottom:12px;letter-spacing:1px}
+.tk-form{padding:0 4px}
+.tk-row{margin-bottom:12px}
+.tk-row label{display:block;font-size:10px;color:rgba(0,240,255,.5);margin-bottom:4px;letter-spacing:.5px;font-weight:700}
+.tk-input-wrap{display:flex;align-items:center;gap:6px}
+.tk-input-wrap .si{flex:1}
+.tk-unit{font-size:10px;color:rgba(200,210,220,.3);flex-shrink:0;width:20px}
+.tk-hint{font-size:8px;color:rgba(200,210,220,.2);margin-top:2px}
+.tk-divider{height:1px;background:rgba(0,240,255,.06);margin:10px 0}
+.tk-switches{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.tk-sw-row{display:flex;align-items:center;gap:5px;font-size:10px;color:rgba(200,210,220,.5);cursor:pointer}
+.tk-sw-row input[type=checkbox]{accent-color:#00f0ff;width:12px;height:12px}
+.tk-actions{margin-top:14px;display:flex;flex-direction:column;gap:6px}
+.tk-actions .run-btn{width:100%;padding:8px;font-size:10px}
 
 .back-link{position:fixed;bottom:8px;left:20px;z-index:50;color:rgba(0,240,255,.35);font-size:9px;text-decoration:none;padding:3px 8px;border:1px solid rgba(0,240,255,.08);background:rgba(2,8,16,.9);font-family:inherit}
 .back-link:hover{color:#00f0ff;border-color:rgba(0,240,255,.25)}

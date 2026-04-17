@@ -39,7 +39,7 @@ router.post('/create', auth(), async (req, res) => {
       return res.json({ code: -1, msg: '缺少必填字段' });
     }
 
-    const validTypes = ['bid', 'budget', 'creative', 'alert'];
+    const validTypes = ['bid', 'budget', 'creative', 'alert', 'ai_takeover'];
     if (!validTypes.includes(rule_type)) {
       return res.json({ code: -1, msg: `rule_type 必须是: ${validTypes.join(', ')}` });
     }
