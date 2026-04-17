@@ -66,9 +66,14 @@ const routes = [
       { path: 'ks-ad-dashboard', name: 'KsAdDashboard', component: () => import('../views/KsAdDashboard.vue'), meta: { title: '账户管理' } },
       { path: 'ks-ad-pitcher', name: 'KsAdPitcher', component: () => import('../views/KsAdPitcher.vue'), meta: { title: '快手AI金牌投手' } },
       { path: 'ks-reviews', name: 'KsReviews', component: () => import('../views/KsReviews.vue'), meta: { title: '评价管理' } },
-      // AI投放引擎
-      { path: 'ai-engine', name: 'AiEngine', component: () => import('../views/AiEngine.vue'), meta: { title: 'AI投放引擎' } },
     ],
+  },
+  // AI投放引擎（独立页面，不套AppLayout）
+  {
+    path: '/ai-engine',
+    name: 'AiEngine',
+    component: () => import('../views/AiEngine.vue'),
+    meta: { title: 'AI投放引擎' },
   },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
