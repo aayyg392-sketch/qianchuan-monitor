@@ -2,18 +2,18 @@
  * 素材疲劳度检测器
  * 基于CTR/CVR下降趋势 + 投放天数 判断素材是否衰退
  */
-const { PLATFORMS } = require('./config');
+const { ADQ_RULES } = require('./config');
 
 class FatigueDetector {
   /**
    * 检测素材是否疲劳
-   * @param {string} platform 平台代码
+   * @param {string} platform 平台代码（保留参数兼容性，实际使用ADQ规则）
    * @param {Array} dailyStats 按天的数据 [{ date, impressions, clicks, conversions, cost }]
    * @param {string} createDate 素材创建日期 YYYY-MM-DD
    * @returns {{ fatigued, score, signals, suggestion }}
    */
   detect(platform, dailyStats, createDate) {
-    const config = PLATFORMS[platform]?.creativeLifespan;
+    const config = ADQ_RULES.creative;
     if (!config || dailyStats.length < 3) {
       return { fatigued: false, score: 0, signals: [], suggestion: '数据不足' };
     }
@@ -23,36 +23,39 @@ class FatigueDetector {
 
     // 1. 投放天数评估
     const daysSinceCreate = this._daysBetween(createDate, new Date().toISOString().slice(0, 10));
-    const ageRatio = daysSinceCreate / config.avgDays;
+    const avgDays = config.medianLifeDays;
+    const ageRatio = daysSinceCreate / avgDays;
     if (ageRatio >= 1) {
       score += 30;
-      signals.push(`投放${daysSinceCreate}天，超过平台均值${config.avgDays}天`);
+      signals.push(`投放${daysSinceCreate}天，超过平台均值${avgDays}天`);
     } else if (ageRatio >= 0.7) {
       score += 15;
       signals.push(`投放${daysSinceCreate}天，接近平台均值`);
     }
 
     // 2. CTR下降趋势
+    const ctrDropThreshold = config.decaySignals.ctrDropThreshold;
     const ctrTrend = this._computeTrend(dailyStats.map(d =>
       d.impressions > 0 ? d.clicks / d.impressions : 0
     ));
-    if (ctrTrend.dropRatio >= config.decaySignalCtrDrop) {
+    if (ctrTrend.dropRatio >= ctrDropThreshold) {
       score += 35;
-      signals.push(`CTR下降${(ctrTrend.dropRatio * 100).toFixed(1)}%（阈值${config.decaySignalCtrDrop * 100}%）`);
+      signals.push(`CTR下降${(ctrTrend.dropRatio * 100).toFixed(1)}%（阈值${ctrDropThreshold * 100}%）`);
     } else if (ctrTrend.dropRatio > 0) {
-      score += Math.round(ctrTrend.dropRatio / config.decaySignalCtrDrop * 15);
+      score += Math.round(ctrTrend.dropRatio / ctrDropThreshold * 15);
       signals.push(`CTR轻微下降${(ctrTrend.dropRatio * 100).toFixed(1)}%`);
     }
 
     // 3. CVR下降趋势
+    const cvrDropThreshold = config.decaySignals.cvrDropThreshold;
     const cvrTrend = this._computeTrend(dailyStats.map(d =>
       d.clicks > 0 ? d.conversions / d.clicks : 0
     ));
-    if (cvrTrend.dropRatio >= config.decaySignalCvrDrop) {
+    if (cvrTrend.dropRatio >= cvrDropThreshold) {
       score += 35;
-      signals.push(`CVR下降${(cvrTrend.dropRatio * 100).toFixed(1)}%（阈值${config.decaySignalCvrDrop * 100}%）`);
+      signals.push(`CVR下降${(cvrTrend.dropRatio * 100).toFixed(1)}%（阈值${cvrDropThreshold * 100}%）`);
     } else if (cvrTrend.dropRatio > 0) {
-      score += Math.round(cvrTrend.dropRatio / config.decaySignalCvrDrop * 15);
+      score += Math.round(cvrTrend.dropRatio / cvrDropThreshold * 15);
       signals.push(`CVR轻微下降${(cvrTrend.dropRatio * 100).toFixed(1)}%`);
     }
 

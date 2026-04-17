@@ -2,29 +2,30 @@
  * 冷启动加速器
  * 根据平台规则判断冷启动状态，提供加速策略
  */
-const { PLATFORMS } = require('./config');
+const { ADQ_RULES } = require('./config');
 
 class ColdStartAccelerator {
   /**
    * 判断广告组冷启动状态
-   * @param {string} platform 平台
+   * @param {string} platform 平台（保留参数兼容性，实际使用ADQ规则）
    * @param {object} adgroup 广告组信息
    *   { createTime, totalConversions, totalImpressions, totalCost, currentBid, dailyBudget }
    * @returns {{ phase, progress, strategy }}
    */
   evaluate(platform, adgroup) {
-    const config = PLATFORMS[platform]?.coldStart;
+    const config = ADQ_RULES.coldStart;
     if (!config) return { phase: 'unknown', progress: 0, strategy: null };
 
     const hoursActive = (Date.now() - new Date(adgroup.createTime).getTime()) / 3600000;
-    const convProgress = Math.min(1, adgroup.totalConversions / config.minConversions);
-    const timeProgress = Math.min(1, hoursActive / config.windowHours);
+    const windowHours = config.learningDays * 24;
+    const convProgress = Math.min(1, adgroup.totalConversions / config.passConversions);
+    const timeProgress = Math.min(1, hoursActive / windowHours);
 
     // 判断阶段
     let phase;
-    if (adgroup.totalConversions >= config.minConversions) {
+    if (adgroup.totalConversions >= config.passConversions) {
       phase = 'graduated'; // 已毕业
-    } else if (hoursActive > config.windowHours) {
+    } else if (hoursActive > windowHours) {
       phase = 'failed'; // 冷启动失败
     } else if (convProgress >= 0.5) {
       phase = 'accelerating'; // 加速期
@@ -40,8 +41,8 @@ class ColdStartAccelerator {
       progress: +convProgress.toFixed(2),
       timeProgress: +timeProgress.toFixed(2),
       hoursActive: Math.round(hoursActive),
-      hoursRemaining: Math.max(0, Math.round(config.windowHours - hoursActive)),
-      conversionsNeeded: Math.max(0, config.minConversions - adgroup.totalConversions),
+      hoursRemaining: Math.max(0, Math.round(windowHours - hoursActive)),
+      conversionsNeeded: Math.max(0, config.passConversions - adgroup.totalConversions),
       strategy,
     };
   }
@@ -53,7 +54,7 @@ class ColdStartAccelerator {
           bidMultiplier: config.boostBidRatio,
           suggestedBid: +(adgroup.currentBid * config.boostBidRatio).toFixed(2),
           budgetSuggestion: '保持预算，不要频繁调整',
-          audienceSuggestion: config.audienceExpand ? '适当放宽人群定向' : '保持现有定向',
+          audienceSuggestion: config.minAudienceSize ? '定向覆盖人群需百万级以上' : '保持现有定向',
           actions: [
             `出价上浮至${(config.boostBidRatio * 100 - 100).toFixed(0)}%以争夺流量`,
             '避免修改广告创意和定向',
@@ -70,7 +71,7 @@ class ColdStartAccelerator {
           audienceSuggestion: '维持当前定向',
           actions: [
             '数据向好，保持当前策略',
-            `还需${config.minConversions - adgroup.totalConversions}个转化完成冷启动`,
+            `还需${config.passConversions - adgroup.totalConversions}个转化完成冷启动`,
             '可小幅增加预算加速积累',
           ],
         };

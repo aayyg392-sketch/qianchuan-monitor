@@ -6,7 +6,7 @@ const router = require('express').Router();
 const db = require('../../db');
 const logger = require('../../logger');
 const auth = require('../../middleware/auth');
-const { PLATFORMS } = require('../config');
+const { ADQ_RULES } = require('../config');
 const AnomalyDetector = require('../anomaly-detector');
 const FatigueDetector = require('../fatigue-detector');
 const ColdStartAccelerator = require('../cold-start');
@@ -27,14 +27,11 @@ const budgetPacer = new BudgetPacer();
 router.post('/adgroup', auth(), async (req, res) => {
   try {
     const data = req.body;
-    const platform = data.platform;
-    const platformConfig = PLATFORMS[platform];
-    if (!platformConfig) return res.json({ code: -1, msg: '不支持的平台' });
 
-    const diagnosis = { platform: platformConfig.name, adgroupId: data.adgroupId, issues: [], suggestions: [], score: 100 };
+    const diagnosis = { platform: ADQ_RULES.name, adgroupId: data.adgroupId, issues: [], suggestions: [], score: 100 };
 
     // 1. 冷启动状态
-    const csResult = coldStart.evaluate(platform, {
+    const csResult = coldStart.evaluate('adq', {
       createTime: data.createTime,
       totalConversions: data.totalConversions || 0,
       totalImpressions: data.totalImpressions || 0,
@@ -73,7 +70,7 @@ router.post('/adgroup', auth(), async (req, res) => {
 
     // 3. 素材疲劳
     if (data.creativeDays?.length >= 3) {
-      const fatigueResult = fatigueDetector.detect(platform, data.creativeDays, data.createTime);
+      const fatigueResult = fatigueDetector.detect('adq', data.creativeDays, data.createTime);
       diagnosis.fatigue = fatigueResult;
       if (fatigueResult.fatigued) {
         diagnosis.score -= 20;
@@ -84,7 +81,7 @@ router.post('/adgroup', auth(), async (req, res) => {
     // 4. 预算消耗
     if (data.dailyBudget && data.todayCost !== undefined) {
       const currentHour = new Date().getHours();
-      const paceResult = budgetPacer.evaluate(platform, data.dailyBudget, data.todayCost, currentHour);
+      const paceResult = budgetPacer.evaluate('adq', data.dailyBudget, data.todayCost, currentHour);
       diagnosis.budgetPace = paceResult;
       if (paceResult.status === 'overspend') {
         diagnosis.score -= 10;
@@ -142,13 +139,13 @@ router.post('/adgroup', auth(), async (req, res) => {
  */
 router.post('/batch', auth(), async (req, res) => {
   try {
-    const { platform, adgroups } = req.body;
+    const { adgroups } = req.body;
     if (!adgroups?.length) return res.json({ code: -1, msg: '无广告组数据' });
 
     const results = [];
     for (const ag of adgroups.slice(0, 50)) {
       try {
-        const csResult = coldStart.evaluate(platform, {
+        const csResult = coldStart.evaluate('adq', {
           createTime: ag.createTime,
           totalConversions: ag.totalConversions || 0,
           totalImpressions: ag.totalImpressions || 0,
@@ -192,9 +189,8 @@ router.post('/batch', auth(), async (req, res) => {
  * GET /api/ai-engine/diagnosis/platform-rules/:platform — 获取平台规则参数
  */
 router.get('/platform-rules/:platform', auth(), async (req, res) => {
-  const config = PLATFORMS[req.params.platform];
-  if (!config) return res.json({ code: -1, msg: '不支持的平台' });
-  res.json({ code: 0, data: config });
+  if (req.params.platform !== 'adq') return res.json({ code: -1, msg: '不支持的平台，仅支持adq' });
+  res.json({ code: 0, data: ADQ_RULES });
 });
 
 module.exports = router;

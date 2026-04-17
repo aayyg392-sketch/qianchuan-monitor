@@ -6,9 +6,8 @@ const router = require('express').Router();
 const db = require('../../db');
 const logger = require('../../logger');
 const auth = require('../../middleware/auth');
-const { PLATFORMS } = require('../config');
+const { ADQ_RULES } = require('../config');
 const PIDController = require('../pid-controller');
-const ThompsonSampling = require('../thompson-sampling');
 const FatigueDetector = require('../fatigue-detector');
 const AnomalyDetector = require('../anomaly-detector');
 const ColdStartAccelerator = require('../cold-start');
@@ -33,7 +32,7 @@ router.get('/status', auth(), async (req, res) => {
         engine: status[0] || { is_running: 0 },
         todayDecisions,
         todayAnomalies: todayAnomalies[0]?.cnt || 0,
-        platforms: Object.keys(PLATFORMS).map(k => ({ code: k, name: PLATFORMS[k].name })),
+        platforms: [{ code: ADQ_RULES.platform, name: ADQ_RULES.name }],
       },
     });
   } catch (e) {
@@ -123,14 +122,12 @@ router.get('/overview', auth(), async (req, res) => {
  */
 router.post('/simulate-bid', auth(), async (req, res) => {
   try {
-    const { platform, currentBid, targetROI, actualROI } = req.body;
-    const platformConfig = PLATFORMS[platform];
-    if (!platformConfig) return res.json({ code: -1, msg: '不支持的平台' });
+    const { currentBid, targetROI, actualROI } = req.body;
 
     const pid = new PIDController();
-    const result = pid.compute(currentBid, targetROI, actualROI, platformConfig.bidding);
+    const result = pid.compute(currentBid, targetROI, actualROI, ADQ_RULES.bidding);
 
-    res.json({ code: 0, data: { ...result, platform: platformConfig.name, constraints: platformConfig.bidding } });
+    res.json({ code: 0, data: { ...result, platform: ADQ_RULES.name, constraints: ADQ_RULES.bidding } });
   } catch (e) {
     res.json({ code: -1, msg: e.message });
   }

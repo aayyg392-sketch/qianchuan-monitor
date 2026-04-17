@@ -4,7 +4,12 @@
  * α = conversions + prior, β = impressions - conversions + prior
  * 每轮采样选择期望最高的素材投放
  */
-const { THOMPSON_DEFAULTS } = require('./config');
+const THOMPSON_DEFAULTS = {
+  priorAlpha: 1,
+  priorBeta: 1,
+  minSamples: 100,
+  explorationBonus: 0.1,
+};
 
 class ThompsonSampling {
   constructor(opts = {}) {

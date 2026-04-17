@@ -2,19 +2,19 @@
  * 预算匀速消耗控制器
  * 根据时段权重分配预算，防止预算过早花完或花不出去
  */
-const { PLATFORMS } = require('./config');
+const { ADQ_RULES } = require('./config');
 
 class BudgetPacer {
   /**
    * 计算当前时刻的预算消耗进度是否正常
-   * @param {string} platform 平台
+   * @param {string} platform 平台（保留参数兼容性，实际使用ADQ规则）
    * @param {number} dailyBudget 日预算
    * @param {number} spentToday 今日已花费
    * @param {number} currentHour 当前小时 0-23
    * @returns {{ status, idealSpent, deviation, action }}
    */
   evaluate(platform, dailyBudget, spentToday, currentHour) {
-    const weights = PLATFORMS[platform]?.hourlyWeights;
+    const weights = ADQ_RULES.hourlyWeights;
     if (!weights || dailyBudget <= 0) {
       return { status: 'unknown', idealSpent: 0, deviation: 0, action: null };
     }

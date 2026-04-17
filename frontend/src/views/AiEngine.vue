@@ -1,336 +1,360 @@
 <template>
-  <div class="ai-engine">
-    <!-- 深空蓝顶部Hero -->
-    <div class="hero">
-      <div class="hero-glow"></div>
-      <div class="hero-top">
-        <div class="hero-title">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#00E5FF" stroke-width="2"><path d="M12 2a4 4 0 014 4v2a4 4 0 01-8 0V6a4 4 0 014-4z"/><path d="M16 14H8a6 6 0 00-6 6v0h20a6 6 0 00-6-6z"/><circle cx="12" cy="6" r="1" fill="#00E5FF"/></svg>
-          <span>AI投放引擎</span>
-        </div>
-        <div class="hero-badge" :class="engineRunning ? 'badge-on' : 'badge-off'" @click="toggleEngine">
-          <span class="badge-dot"></span>{{ engineRunning ? '运行中' : '已停止' }}
-        </div>
-      </div>
-      <!-- 引擎核心指标 -->
-      <div class="hero-metrics">
-        <div class="hm-item">
-          <div class="hm-val">{{ engineStatus.total_decisions || 0 }}</div>
-          <div class="hm-label">今日决策</div>
-        </div>
-        <div class="hm-divider"></div>
-        <div class="hm-item">
-          <div class="hm-val anomaly">{{ todayAnomalies }}</div>
-          <div class="hm-label">异常告警</div>
-        </div>
-        <div class="hm-divider"></div>
-        <div class="hm-item">
-          <div class="hm-val">{{ lastRunDuration }}</div>
-          <div class="hm-label">巡检耗时</div>
-        </div>
-        <div class="hm-divider"></div>
-        <div class="hm-item">
-          <div class="hm-val platform-count">3</div>
-          <div class="hm-label">接入平台</div>
-        </div>
-      </div>
-      <div class="hero-time" v-if="engineStatus.last_run_at">最近巡检 {{ fmtTime(engineStatus.last_run_at) }}</div>
-    </div>
+  <div class="cmd-center" ref="cmdCenter">
+    <!-- 扫描线 + 网格背景 -->
+    <div class="bg-grid"></div>
+    <div class="scan-line"></div>
+    <div class="particles" ref="particlesEl"></div>
 
-    <!-- Tab切换 -->
-    <div class="tab-bar">
-      <div class="tab-item" :class="{ active: activeTab === 'overview' }" @click="activeTab = 'overview'">总览</div>
-      <div class="tab-item" :class="{ active: activeTab === 'decisions' }" @click="activeTab = 'decisions'">决策记录</div>
-      <div class="tab-item" :class="{ active: activeTab === 'rules' }" @click="activeTab = 'rules'">策略规则</div>
-      <div class="tab-item" :class="{ active: activeTab === 'simulator' }" @click="activeTab = 'simulator'">模拟测试</div>
-    </div>
-
-    <!-- ===== Tab: 总览 ===== -->
-    <div v-show="activeTab === 'overview'" class="tab-content">
-      <!-- 三平台状态卡片 -->
-      <div class="platform-cards">
-        <div class="pf-card" v-for="pf in platforms" :key="pf.code" @click="selectedPlatform = pf.code">
-          <div class="pf-card-head">
-            <span class="pf-name">{{ pf.name }}</span>
-            <span class="pf-code">{{ pf.code }}</span>
+    <!-- ===== 顶部指挥栏 ===== -->
+    <header class="cmd-header">
+      <div class="hdr-left">
+        <div class="hdr-logo">
+          <div class="logo-ring" :class="{ spinning: engineRunning }">
+            <svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="18" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="4 3" /></svg>
           </div>
-          <div class="pf-card-stats">
-            <div class="pf-stat">
-              <span class="pf-stat-val">{{ getPlatformStat(pf.code, 'bid_adjust') }}</span>
-              <span class="pf-stat-label">调价</span>
-            </div>
-            <div class="pf-stat">
-              <span class="pf-stat-val warn">{{ getPlatformStat(pf.code, 'anomaly_alert') }}</span>
-              <span class="pf-stat-label">异常</span>
-            </div>
-            <div class="pf-stat">
-              <span class="pf-stat-val accent">{{ getPlatformStat(pf.code, 'creative_rotate') }}</span>
-              <span class="pf-stat-label">换素材</span>
+          <div class="logo-core" :class="{ active: engineRunning }"></div>
+        </div>
+        <div class="hdr-titles">
+          <h1>AI<span class="accent">自动化</span>腾讯ADQ指挥大屏</h1>
+          <div class="hdr-sub">INTELLIGENT ADQ COMMAND CENTER</div>
+        </div>
+      </div>
+      <div class="hdr-right">
+        <div class="hdr-time">{{ currentTime }}</div>
+        <button class="engine-btn" :class="{ on: engineRunning }" @click="toggleEngine">
+          <span class="ebtn-dot"></span>
+          {{ engineRunning ? 'ENGINE ON' : 'ENGINE OFF' }}
+        </button>
+      </div>
+    </header>
+
+    <!-- ===== 核心指标条 ===== -->
+    <div class="metrics-bar">
+      <div class="metric-box" v-for="m in coreMetrics" :key="m.key">
+        <div class="mbox-glow" :style="{ background: m.color }"></div>
+        <div class="mbox-val" :style="{ color: m.color }">{{ m.value }}</div>
+        <div class="mbox-label">{{ m.label }}</div>
+        <div class="mbox-corner tl"></div><div class="mbox-corner tr"></div>
+        <div class="mbox-corner bl"></div><div class="mbox-corner br"></div>
+      </div>
+    </div>
+
+    <!-- ===== 主指挥区域 ===== -->
+    <div class="cmd-body">
+      <!-- 左面板 -->
+      <div class="panel panel-left">
+        <!-- ADQ账户接管 -->
+        <div class="hud-card">
+          <div class="hud-title"><span class="ht-dot"></span>ADQ账户AI接管</div>
+          <div class="account-list" v-if="adqAccounts.length">
+            <div class="acc-row" v-for="acc in adqAccounts" :key="acc.id" @click="toggleAiTakeover(acc)">
+              <div class="acc-info">
+                <div class="acc-name">{{ acc.account_name || acc.app_id || '账户' + acc.id }}</div>
+                <div class="acc-id">ID: {{ acc.account_id || acc.id }}</div>
+              </div>
+              <div class="acc-switch" :class="{ 'sw-active': acc.aiEnabled }">
+                <div class="sw-track"><div class="sw-thumb"></div></div>
+                <span>{{ acc.aiEnabled ? 'AI接管中' : '手动' }}</span>
+              </div>
             </div>
           </div>
-          <div class="pf-glow-bar" :class="'glow-' + pf.code"></div>
+          <div class="empty-state" v-else>暂无ADQ账户</div>
         </div>
-      </div>
 
-      <!-- 最近异常 -->
-      <div class="section">
-        <div class="section-title">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#FF6B35" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-          异常告警
-        </div>
-        <div v-if="!recentAnomalies.length" class="empty-hint">暂无异常</div>
-        <div v-for="(a, i) in recentAnomalies" :key="i" class="alert-item" :class="'alert-' + getSeverity(a)">
-          <div class="alert-badge">{{ getSeverity(a) === 'critical' ? '严重' : '警告' }}</div>
-          <div class="alert-body">
-            <div class="alert-msg">{{ getAlertMsg(a) }}</div>
-            <div class="alert-meta">{{ getPlatformName(a.platform) }} · {{ fmtTime(a.created_at) }}</div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 最近出价调整 -->
-      <div class="section">
-        <div class="section-title">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#00E5FF" stroke-width="2"><path d="M12 20V10M18 20V4M6 20v-4"/></svg>
-          出价调整
-        </div>
-        <div v-if="!recentBids.length" class="empty-hint">暂无调价记录</div>
-        <div v-for="(b, i) in recentBids" :key="i" class="bid-item">
-          <div class="bid-direction" :class="getBidDirection(b) > 0 ? 'bid-up' : 'bid-down'">
-            {{ getBidDirection(b) > 0 ? '↑' : '↓' }}
-          </div>
-          <div class="bid-body">
-            <div class="bid-change">{{ getBidFrom(b) }} → {{ getBidTo(b) }}</div>
-            <div class="bid-meta">{{ getPlatformName(b.platform) }} · {{ fmtTime(b.created_at) }}</div>
-          </div>
-          <div class="bid-pct" :class="getBidDirection(b) > 0 ? 'pct-up' : 'pct-down'">
-            {{ getBidDirection(b) > 0 ? '+' : '' }}{{ (getBidDirection(b) * 100).toFixed(1) }}%
+        <!-- 异常告警 -->
+        <div class="hud-card">
+          <div class="hud-title"><span class="ht-dot alert"></span>异常预警</div>
+          <div v-if="!recentAnomalies.length" class="empty-state">系统正常运行</div>
+          <div v-for="(a, i) in recentAnomalies.slice(0, 5)" :key="i" class="alert-row" :class="'severity-' + getSeverity(a)">
+            <div class="alert-indicator">
+              <div class="alert-pulse"></div>
+            </div>
+            <div class="alert-content">
+              <div class="alert-msg">{{ getAlertMsg(a) }}</div>
+              <div class="alert-time">{{ fmtTime(a.created_at) }}</div>
+            </div>
+            <div class="alert-level">{{ getSeverity(a) === 'critical' ? 'CRITICAL' : 'WARN' }}</div>
           </div>
         </div>
       </div>
 
-      <!-- 素材疲劳预警 -->
-      <div class="section">
-        <div class="section-title">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#A78BFA" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
-          素材疲劳
+      <!-- 中央雷达区 -->
+      <div class="panel panel-center">
+        <div class="radar-container">
+          <div class="radar-outer">
+            <svg viewBox="0 0 300 300" class="radar-svg">
+              <!-- 同心圆 -->
+              <circle cx="150" cy="150" r="140" fill="none" stroke="rgba(0,229,255,0.08)" stroke-width="1"/>
+              <circle cx="150" cy="150" r="105" fill="none" stroke="rgba(0,229,255,0.06)" stroke-width="1"/>
+              <circle cx="150" cy="150" r="70" fill="none" stroke="rgba(0,229,255,0.04)" stroke-width="1"/>
+              <circle cx="150" cy="150" r="35" fill="none" stroke="rgba(0,229,255,0.03)" stroke-width="1"/>
+              <!-- 十字线 -->
+              <line x1="150" y1="10" x2="150" y2="290" stroke="rgba(0,229,255,0.06)" stroke-width="0.5"/>
+              <line x1="10" y1="150" x2="290" y2="150" stroke="rgba(0,229,255,0.06)" stroke-width="0.5"/>
+              <line x1="50" y1="50" x2="250" y2="250" stroke="rgba(0,229,255,0.03)" stroke-width="0.5"/>
+              <line x1="250" y1="50" x2="50" y2="250" stroke="rgba(0,229,255,0.03)" stroke-width="0.5"/>
+              <!-- 扫描扇区 -->
+              <path v-if="engineRunning" class="radar-sweep" d="M150,150 L150,10 A140,140 0 0,1 248,52 Z" fill="url(#sweepGrad)"/>
+              <defs>
+                <linearGradient id="sweepGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="rgba(0,229,255,0)" />
+                  <stop offset="100%" stop-color="rgba(0,229,255,0.15)" />
+                </linearGradient>
+              </defs>
+              <!-- 数据点 -->
+              <circle v-for="(dot, i) in radarDots" :key="i" :cx="dot.x" :cy="dot.y" :r="dot.r" :fill="dot.color" class="radar-dot" :style="{ animationDelay: dot.delay }"/>
+            </svg>
+          </div>
+          <!-- 中心状态 -->
+          <div class="radar-core">
+            <div class="core-ring" :class="{ active: engineRunning }"></div>
+            <div class="core-text">
+              <div class="core-status" :class="engineRunning ? 'status-on' : 'status-off'">
+                {{ engineRunning ? 'SCANNING' : 'STANDBY' }}
+              </div>
+              <div class="core-num">{{ engineStatus.total_decisions || 0 }}</div>
+              <div class="core-label">DECISIONS</div>
+            </div>
+          </div>
         </div>
-        <div v-if="!fatigueAlerts.length" class="empty-hint">暂无疲劳素材</div>
-        <div v-for="(f, i) in fatigueAlerts" :key="i" class="fatigue-item">
-          <div class="fatigue-score" :class="getFatigueLevel(f)">{{ getFatigueScore(f) }}</div>
-          <div class="fatigue-body">
-            <div class="fatigue-msg">{{ getFatigueSuggestion(f) }}</div>
-            <div class="fatigue-meta">{{ getPlatformName(f.platform) }} · {{ fmtTime(f.created_at) }}</div>
+
+        <!-- 雷达下方 - 引擎状态 -->
+        <div class="engine-stats">
+          <div class="estat" v-for="s in engineStatsList" :key="s.label">
+            <div class="estat-bar">
+              <div class="estat-fill" :style="{ width: s.pct + '%', background: s.color }"></div>
+            </div>
+            <div class="estat-info">
+              <span class="estat-label">{{ s.label }}</span>
+              <span class="estat-val" :style="{ color: s.color }">{{ s.value }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 右面板 -->
+      <div class="panel panel-right">
+        <!-- 实时决策流 -->
+        <div class="hud-card">
+          <div class="hud-title"><span class="ht-dot"></span>实时决策流</div>
+          <div v-if="!recentDecisions.length" class="empty-state">等待AI决策...</div>
+          <div v-for="d in recentDecisions.slice(0, 8)" :key="d.id" class="decision-row">
+            <div class="drow-type" :class="'dtype-' + d.decision_type">
+              {{ typeIcon(d.decision_type) }}
+            </div>
+            <div class="drow-body">
+              <div class="drow-msg">{{ summarizeDecision(d) }}</div>
+              <div class="drow-time">{{ fmtTime(d.created_at) }}</div>
+            </div>
+            <div class="drow-status" :class="d.executed ? 'exec-ok' : 'exec-wait'">
+              {{ d.executed ? 'DONE' : 'WAIT' }}
+            </div>
+          </div>
+        </div>
+
+        <!-- 出价调整 -->
+        <div class="hud-card">
+          <div class="hud-title"><span class="ht-dot bid"></span>出价调整</div>
+          <div v-if="!recentBids.length" class="empty-state">暂无调价</div>
+          <div v-for="(b, i) in recentBids.slice(0, 5)" :key="i" class="bid-row">
+            <div class="bid-arrow" :class="getBidDirection(b) > 0 ? 'arrow-up' : 'arrow-down'">
+              {{ getBidDirection(b) > 0 ? '&#9650;' : '&#9660;' }}
+            </div>
+            <div class="bid-info">
+              <div class="bid-change">{{ getBidFrom(b) }} <span class="bid-to">&rarr;</span> {{ getBidTo(b) }}</div>
+              <div class="bid-time">{{ fmtTime(b.created_at) }}</div>
+            </div>
+            <div class="bid-pct" :class="getBidDirection(b) > 0 ? 'pct-up' : 'pct-dn'">
+              {{ getBidDirection(b) > 0 ? '+' : '' }}{{ (getBidDirection(b) * 100).toFixed(1) }}%
+            </div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- ===== Tab: 决策记录 ===== -->
-    <div v-show="activeTab === 'decisions'" class="tab-content">
-      <div class="filter-row">
-        <select v-model="decisionFilter.platform" class="ds-select" @change="loadDecisions">
-          <option value="">全平台</option>
-          <option v-for="p in platforms" :key="p.code" :value="p.code">{{ p.name }}</option>
-        </select>
-        <select v-model="decisionFilter.type" class="ds-select" @change="loadDecisions">
-          <option value="">全类型</option>
-          <option value="bid_adjust">出价调整</option>
-          <option value="creative_rotate">素材轮换</option>
-          <option value="budget_pace">预算控制</option>
-          <option value="anomaly_alert">异常告警</option>
-          <option value="cold_start">冷启动</option>
-        </select>
-      </div>
-      <div v-if="!decisions.length" class="empty-hint">暂无决策记录</div>
-      <div v-for="d in decisions" :key="d.id" class="decision-card">
-        <div class="dc-head">
-          <span class="dc-type" :class="'dc-' + d.decision_type">{{ typeLabel(d.decision_type) }}</span>
-          <span class="dc-time">{{ fmtTime(d.created_at) }}</span>
+    <!-- ===== 底部Tab区域（策略/模拟/记录）===== -->
+    <div class="bottom-section">
+      <div class="btab-bar">
+        <div class="btab" :class="{ active: activeTab === 'rules' }" @click="activeTab = 'rules'">
+          <span class="btab-icon">&#9881;</span>策略规则
         </div>
-        <div class="dc-platform">{{ getPlatformName(d.platform) }}</div>
-        <div class="dc-detail" v-if="d.decision_data">{{ summarizeDecision(d) }}</div>
-        <div class="dc-exec" :class="d.executed ? 'exec-done' : 'exec-pending'">
-          {{ d.executed ? '已执行' : '待执行' }}
+        <div class="btab" :class="{ active: activeTab === 'decisions' }" @click="activeTab = 'decisions'">
+          <span class="btab-icon">&#9783;</span>决策记录
         </div>
-      </div>
-      <div class="load-more" v-if="decisions.length && decisionTotal > decisions.length" @click="loadMoreDecisions">加载更多</div>
-    </div>
-
-    <!-- ===== Tab: 策略规则 ===== -->
-    <div v-show="activeTab === 'rules'" class="tab-content">
-      <div class="rules-head">
-        <div class="section-title" style="margin:0">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#00E5FF" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-          策略规则
-        </div>
-        <button class="ds-btn" @click="showTemplates = true">+ 从模板创建</button>
-      </div>
-
-      <div v-if="!rules.length" class="empty-hint">暂无规则，点击上方按钮创建</div>
-      <div v-for="r in rules" :key="r.id" class="rule-card">
-        <div class="rule-head">
-          <span class="rule-name">{{ r.rule_name }}</span>
-          <span class="rule-switch" :class="r.is_active ? 'sw-on' : 'sw-off'" @click="toggleRule(r)">
-            {{ r.is_active ? 'ON' : 'OFF' }}
-          </span>
-        </div>
-        <div class="rule-type">{{ typeLabel(r.rule_type) }} · {{ getPlatformName(r.platform) }}</div>
-        <div class="rule-actions">
-          <span class="rule-del" @click="deleteRule(r.id)">删除</span>
+        <div class="btab" :class="{ active: activeTab === 'simulator' }" @click="activeTab = 'simulator'">
+          <span class="btab-icon">&#9881;</span>模拟测试
         </div>
       </div>
 
-      <!-- 模板弹窗 -->
-      <div class="modal-mask" v-if="showTemplates" @click.self="showTemplates = false">
-        <div class="modal-body">
-          <div class="modal-title">规则模板</div>
-          <div v-for="(t, i) in ruleTemplates" :key="i" class="tpl-card" @click="createFromTemplate(t)">
-            <div class="tpl-name">{{ t.name }}</div>
-            <div class="tpl-desc">{{ t.description }}</div>
-            <div class="tpl-type">{{ typeLabel(t.type) }}</div>
+      <!-- 策略规则 -->
+      <div v-show="activeTab === 'rules'" class="btab-content">
+        <div class="rules-toolbar">
+          <button class="neon-btn" @click="showTemplates = true">+ 从模板创建</button>
+        </div>
+        <div v-if="!rules.length" class="empty-state">暂无策略，点击上方按钮创建</div>
+        <div class="rules-grid">
+          <div v-for="r in rules" :key="r.id" class="rule-item">
+            <div class="ri-head">
+              <span class="ri-name">{{ r.rule_name }}</span>
+              <span class="ri-toggle" :class="r.is_active ? 'tog-on' : 'tog-off'" @click="toggleRule(r)">
+                {{ r.is_active ? 'ON' : 'OFF' }}
+              </span>
+            </div>
+            <div class="ri-type">{{ typeLabel(r.rule_type) }}</div>
+            <div class="ri-del" @click="deleteRule(r.id)">DELETE</div>
           </div>
-          <button class="ds-btn modal-close" @click="showTemplates = false">关闭</button>
         </div>
       </div>
-    </div>
 
-    <!-- ===== Tab: 模拟测试 ===== -->
-    <div v-show="activeTab === 'simulator'" class="tab-content">
-      <div class="sim-tabs">
-        <span :class="{ active: simMode === 'bid' }" @click="simMode = 'bid'">PID调价</span>
-        <span :class="{ active: simMode === 'coldstart' }" @click="simMode = 'coldstart'">冷启动</span>
-        <span :class="{ active: simMode === 'budget' }" @click="simMode = 'budget'">预算匀速</span>
-      </div>
-
-      <!-- PID调价模拟 -->
-      <div v-if="simMode === 'bid'" class="sim-panel">
-        <div class="sim-field">
-          <label>平台</label>
-          <select v-model="simBid.platform" class="ds-select">
-            <option v-for="p in platforms" :key="p.code" :value="p.code">{{ p.name }}</option>
+      <!-- 决策记录 -->
+      <div v-show="activeTab === 'decisions'" class="btab-content">
+        <div class="filter-bar">
+          <select v-model="decisionFilter.type" class="hud-select" @change="loadDecisions">
+            <option value="">全部类型</option>
+            <option value="bid_adjust">出价调整</option>
+            <option value="creative_rotate">素材轮换</option>
+            <option value="budget_pace">预算控制</option>
+            <option value="anomaly_alert">异常告警</option>
+            <option value="cold_start">冷启动</option>
           </select>
         </div>
-        <div class="sim-field">
-          <label>当前出价</label>
-          <input v-model.number="simBid.currentBid" type="number" class="ds-input" placeholder="如 5.0">
-        </div>
-        <div class="sim-field">
-          <label>目标ROI</label>
-          <input v-model.number="simBid.targetROI" type="number" class="ds-input" placeholder="如 2.0">
-        </div>
-        <div class="sim-field">
-          <label>实际ROI</label>
-          <input v-model.number="simBid.actualROI" type="number" class="ds-input" placeholder="如 1.2">
-        </div>
-        <button class="ds-btn primary" @click="runBidSim" :disabled="simLoading">运行模拟</button>
-        <div v-if="simBidResult" class="sim-result">
-          <div class="sim-result-title">PID计算结果</div>
-          <div class="sim-kv"><span>建议出价</span><strong :class="simBidResult.adjustment > 0 ? 'val-up' : 'val-down'">¥{{ simBidResult.newBid }}</strong></div>
-          <div class="sim-kv"><span>调整幅度</span><strong>{{ (simBidResult.adjustment * 100).toFixed(1) }}%</strong></div>
-          <div class="sim-kv"><span>误差值</span><strong>{{ simBidResult.error }}</strong></div>
-          <div class="sim-kv"><span>P/I/D分量</span><strong>{{ simBidResult.detail?.proportional }} / {{ simBidResult.detail?.integral }} / {{ simBidResult.detail?.derivative }}</strong></div>
-        </div>
-      </div>
-
-      <!-- 冷启动模拟 -->
-      <div v-if="simMode === 'coldstart'" class="sim-panel">
-        <div class="sim-field">
-          <label>平台</label>
-          <select v-model="simCold.platform" class="ds-select">
-            <option v-for="p in platforms" :key="p.code" :value="p.code">{{ p.name }}</option>
-          </select>
-        </div>
-        <div class="sim-field">
-          <label>创建时间</label>
-          <input v-model="simCold.createTime" type="datetime-local" class="ds-input">
-        </div>
-        <div class="sim-field">
-          <label>累计转化数</label>
-          <input v-model.number="simCold.totalConversions" type="number" class="ds-input" placeholder="如 8">
-        </div>
-        <div class="sim-field">
-          <label>当前出价</label>
-          <input v-model.number="simCold.currentBid" type="number" class="ds-input" placeholder="如 5.0">
-        </div>
-        <button class="ds-btn primary" @click="runColdSim" :disabled="simLoading">运行模拟</button>
-        <div v-if="simColdResult" class="sim-result">
-          <div class="sim-result-title">冷启动评估</div>
-          <div class="sim-kv"><span>阶段</span><strong class="phase-tag" :class="'phase-' + simColdResult.phase">{{ phaseLabel(simColdResult.phase) }}</strong></div>
-          <div class="sim-kv"><span>转化进度</span><strong>{{ (simColdResult.progress * 100).toFixed(0) }}%</strong></div>
-          <div class="sim-kv"><span>剩余时间</span><strong>{{ simColdResult.hoursRemaining }}h</strong></div>
-          <div class="sim-kv"><span>还需转化</span><strong>{{ simColdResult.conversionsNeeded }}个</strong></div>
-          <div class="sim-advice" v-if="simColdResult.strategy">
-            <div class="sim-advice-title">策略建议</div>
-            <div v-for="(act, i) in simColdResult.strategy.actions" :key="i" class="sim-advice-item">{{ act }}</div>
+        <div v-if="!decisions.length" class="empty-state">暂无决策记录</div>
+        <div class="decision-table">
+          <div v-for="d in decisions" :key="d.id" class="dtable-row">
+            <span class="dt-type" :class="'dtype-' + d.decision_type">{{ typeLabel(d.decision_type) }}</span>
+            <span class="dt-detail">{{ summarizeDecision(d) }}</span>
+            <span class="dt-time">{{ fmtTime(d.created_at) }}</span>
+            <span class="dt-exec" :class="d.executed ? 'exec-ok' : 'exec-wait'">{{ d.executed ? 'DONE' : 'WAIT' }}</span>
           </div>
         </div>
+        <div class="load-more" v-if="decisions.length && decisionTotal > decisions.length" @click="loadMoreDecisions">LOAD MORE</div>
       </div>
 
-      <!-- 预算匀速模拟 -->
-      <div v-if="simMode === 'budget'" class="sim-panel">
-        <div class="sim-field">
-          <label>平台</label>
-          <select v-model="simBudget.platform" class="ds-select">
-            <option v-for="p in platforms" :key="p.code" :value="p.code">{{ p.name }}</option>
-          </select>
+      <!-- 模拟测试 -->
+      <div v-show="activeTab === 'simulator'" class="btab-content">
+        <div class="sim-mode-bar">
+          <span :class="{ active: simMode === 'bid' }" @click="simMode = 'bid'">PID调价</span>
+          <span :class="{ active: simMode === 'coldstart' }" @click="simMode = 'coldstart'">冷启动</span>
+          <span :class="{ active: simMode === 'budget' }" @click="simMode = 'budget'">预算匀速</span>
         </div>
-        <div class="sim-field">
-          <label>日预算</label>
-          <input v-model.number="simBudget.dailyBudget" type="number" class="ds-input" placeholder="如 1000">
+
+        <div v-if="simMode === 'bid'" class="sim-form">
+          <div class="sf-row">
+            <label>当前出价</label>
+            <input v-model.number="simBid.currentBid" type="number" class="hud-input" placeholder="5.0">
+          </div>
+          <div class="sf-row">
+            <label>目标ROI</label>
+            <input v-model.number="simBid.targetROI" type="number" class="hud-input" placeholder="2.0">
+          </div>
+          <div class="sf-row">
+            <label>实际ROI</label>
+            <input v-model.number="simBid.actualROI" type="number" class="hud-input" placeholder="1.2">
+          </div>
+          <button class="neon-btn primary" @click="runBidSim" :disabled="simLoading">RUN SIMULATION</button>
+          <div v-if="simBidResult" class="sim-output">
+            <div class="so-title">PID OUTPUT</div>
+            <div class="so-row"><span>建议出价</span><strong :class="simBidResult.adjustment > 0 ? 'val-up' : 'val-dn'">{{ simBidResult.newBid }}</strong></div>
+            <div class="so-row"><span>调整幅度</span><strong>{{ (simBidResult.adjustment * 100).toFixed(1) }}%</strong></div>
+            <div class="so-row"><span>P/I/D</span><strong>{{ simBidResult.detail?.proportional }} / {{ simBidResult.detail?.integral }} / {{ simBidResult.detail?.derivative }}</strong></div>
+          </div>
         </div>
-        <div class="sim-field">
-          <label>今日已花费</label>
-          <input v-model.number="simBudget.spentToday" type="number" class="ds-input" placeholder="如 350">
+
+        <div v-if="simMode === 'coldstart'" class="sim-form">
+          <div class="sf-row">
+            <label>创建时间</label>
+            <input v-model="simCold.createTime" type="datetime-local" class="hud-input">
+          </div>
+          <div class="sf-row">
+            <label>累计转化</label>
+            <input v-model.number="simCold.totalConversions" type="number" class="hud-input" placeholder="8">
+          </div>
+          <div class="sf-row">
+            <label>当前出价</label>
+            <input v-model.number="simCold.currentBid" type="number" class="hud-input" placeholder="5.0">
+          </div>
+          <button class="neon-btn primary" @click="runColdSim" :disabled="simLoading">RUN SIMULATION</button>
+          <div v-if="simColdResult" class="sim-output">
+            <div class="so-title">COLD START ANALYSIS</div>
+            <div class="so-row"><span>阶段</span><strong class="phase-tag" :class="'phase-' + simColdResult.phase">{{ phaseLabel(simColdResult.phase) }}</strong></div>
+            <div class="so-row"><span>转化进度</span><strong>{{ (simColdResult.progress * 100).toFixed(0) }}%</strong></div>
+            <div class="so-row"><span>剩余时间</span><strong>{{ simColdResult.hoursRemaining }}h</strong></div>
+            <div v-if="simColdResult.strategy" class="so-advice">
+              <div v-for="(act, i) in simColdResult.strategy.actions" :key="i" class="so-advice-item">{{ act }}</div>
+            </div>
+          </div>
         </div>
-        <div class="sim-field">
-          <label>当前小时</label>
-          <input v-model.number="simBudget.currentHour" type="number" class="ds-input" min="0" max="23" :placeholder="'当前' + new Date().getHours() + '时'">
-        </div>
-        <button class="ds-btn primary" @click="runBudgetSim" :disabled="simLoading">运行模拟</button>
-        <div v-if="simBudgetResult" class="sim-result">
-          <div class="sim-result-title">预算消耗评估</div>
-          <div class="sim-kv"><span>状态</span><strong class="pace-tag" :class="'pace-' + simBudgetResult.status">{{ paceLabel(simBudgetResult.status) }}</strong></div>
-          <div class="sim-kv"><span>理想消耗</span><strong>¥{{ simBudgetResult.idealSpent }}</strong></div>
-          <div class="sim-kv"><span>实际消耗</span><strong>¥{{ simBudgetResult.actualSpent }}</strong></div>
-          <div class="sim-kv"><span>偏差</span><strong>{{ (simBudgetResult.deviation * 100).toFixed(1) }}%</strong></div>
-          <div class="sim-kv"><span>剩余预算</span><strong>¥{{ simBudgetResult.remainingBudget }}</strong></div>
-          <div class="sim-advice" v-if="simBudgetResult.action">
-            <div class="sim-advice-title">建议操作</div>
-            <div class="sim-advice-item">{{ simBudgetResult.action.message }}</div>
+
+        <div v-if="simMode === 'budget'" class="sim-form">
+          <div class="sf-row">
+            <label>日预算</label>
+            <input v-model.number="simBudget.dailyBudget" type="number" class="hud-input" placeholder="1000">
+          </div>
+          <div class="sf-row">
+            <label>已花费</label>
+            <input v-model.number="simBudget.spentToday" type="number" class="hud-input" placeholder="350">
+          </div>
+          <div class="sf-row">
+            <label>当前小时</label>
+            <input v-model.number="simBudget.currentHour" type="number" class="hud-input" min="0" max="23">
+          </div>
+          <button class="neon-btn primary" @click="runBudgetSim" :disabled="simLoading">RUN SIMULATION</button>
+          <div v-if="simBudgetResult" class="sim-output">
+            <div class="so-title">BUDGET PACING</div>
+            <div class="so-row"><span>状态</span><strong class="pace-tag" :class="'pace-' + simBudgetResult.status">{{ paceLabel(simBudgetResult.status) }}</strong></div>
+            <div class="so-row"><span>理想消耗</span><strong>{{ simBudgetResult.idealSpent }}</strong></div>
+            <div class="so-row"><span>偏差</span><strong>{{ (simBudgetResult.deviation * 100).toFixed(1) }}%</strong></div>
+            <div v-if="simBudgetResult.action" class="so-advice">
+              <div class="so-advice-item">{{ simBudgetResult.action.message }}</div>
+            </div>
           </div>
         </div>
       </div>
     </div>
+
+    <!-- 模板弹窗 -->
+    <div class="modal-overlay" v-if="showTemplates" @click.self="showTemplates = false">
+      <div class="modal-hud">
+        <div class="modal-hud-title">RULE TEMPLATES</div>
+        <div v-for="(t, i) in ruleTemplates" :key="i" class="tpl-row" @click="createFromTemplate(t)">
+          <div class="tpl-name">{{ t.name }}</div>
+          <div class="tpl-desc">{{ t.description }}</div>
+        </div>
+        <button class="neon-btn" @click="showTemplates = false" style="width:100%;margin-top:16px">CLOSE</button>
+      </div>
+    </div>
+
+    <!-- 返回按钮 -->
+    <router-link to="/dashboard" class="back-btn">&#9664; 返回系统</router-link>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { message } from 'ant-design-vue'
 import request from '../utils/request'
 import dayjs from 'dayjs'
 
-const activeTab = ref('overview')
+// ---- 状态 ----
+const cmdCenter = ref(null)
+const particlesEl = ref(null)
+const activeTab = ref('rules')
 const engineRunning = ref(false)
 const engineStatus = ref({})
 const todayAnomalies = ref(0)
-const platforms = ref([
-  { code: 'qianchuan', name: '巨量千川' },
-  { code: 'kuaishou', name: '快手磁力' },
-  { code: 'adq', name: '腾讯ADQ' },
-])
-const selectedPlatform = ref('')
-const platformStats = ref([])
+const adqAccounts = ref([])
 const recentAnomalies = ref([])
 const recentBids = ref([])
+const recentDecisions = ref([])
 const fatigueAlerts = ref([])
+const currentTime = ref('')
+let timeTimer = null
 
 // 决策记录
 const decisions = ref([])
 const decisionTotal = ref(0)
 const decisionPage = ref(1)
-const decisionFilter = reactive({ platform: '', type: '' })
+const decisionFilter = reactive({ platform: 'adq', type: '' })
 
 // 规则
 const rules = ref([])
@@ -340,32 +364,61 @@ const showTemplates = ref(false)
 // 模拟器
 const simMode = ref('bid')
 const simLoading = ref(false)
-const simBid = reactive({ platform: 'qianchuan', currentBid: 5, targetROI: 2.0, actualROI: 1.2 })
+const simBid = reactive({ platform: 'adq', currentBid: 5, targetROI: 2.0, actualROI: 1.2 })
 const simBidResult = ref(null)
-const simCold = reactive({ platform: 'qianchuan', createTime: '', totalConversions: 8, currentBid: 5 })
+const simCold = reactive({ platform: 'adq', createTime: '', totalConversions: 8, currentBid: 5 })
 const simColdResult = ref(null)
-const simBudget = reactive({ platform: 'qianchuan', dailyBudget: 1000, spentToday: 350, currentHour: new Date().getHours() })
+const simBudget = reactive({ platform: 'adq', dailyBudget: 1000, spentToday: 350, currentHour: new Date().getHours() })
 const simBudgetResult = ref(null)
 
-const lastRunDuration = computed(() => {
-  const ms = engineStatus.value.last_run_duration_ms
-  if (!ms) return '--'
-  return ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's'
+// ---- 计算属性 ----
+const coreMetrics = computed(() => [
+  { key: 'decisions', label: 'AI决策总数', value: engineStatus.value.total_decisions || 0, color: '#00E5FF' },
+  { key: 'anomalies', label: '异常告警', value: todayAnomalies.value, color: '#FF4D4F' },
+  { key: 'duration', label: '巡检耗时', value: fmtDuration(engineStatus.value.last_run_duration_ms), color: '#00FF88' },
+  { key: 'accounts', label: 'AI接管账户', value: adqAccounts.value.filter(a => a.aiEnabled).length, color: '#A78BFA' },
+])
+
+const engineStatsList = computed(() => {
+  const total = engineStatus.value.total_decisions || 0
+  const anomalies = todayAnomalies.value
+  const bids = recentBids.value.length
+  const fatigue = fatigueAlerts.value.length
+  const max = Math.max(total, 1)
+  return [
+    { label: 'AI DECISIONS', value: total, pct: Math.min(100, (total / Math.max(max, 20)) * 100), color: '#00E5FF' },
+    { label: 'ANOMALIES', value: anomalies, pct: Math.min(100, (anomalies / Math.max(total, 1)) * 100), color: '#FF4D4F' },
+    { label: 'BID ADJUSTS', value: bids, pct: Math.min(100, (bids / Math.max(total, 1)) * 100), color: '#00FF88' },
+    { label: 'FATIGUE ALERTS', value: fatigue, pct: Math.min(100, (fatigue / Math.max(total, 1)) * 100), color: '#FFB800' },
+  ]
 })
 
+const radarDots = computed(() => {
+  const dots = []
+  const items = [...recentBids.value.slice(0, 5), ...recentAnomalies.value.slice(0, 5)]
+  items.forEach((_, i) => {
+    const angle = (i / Math.max(items.length, 1)) * Math.PI * 2 + Math.random() * 0.5
+    const dist = 40 + Math.random() * 90
+    dots.push({
+      x: 150 + Math.cos(angle) * dist,
+      y: 150 + Math.sin(angle) * dist,
+      r: 2 + Math.random() * 3,
+      color: i < recentBids.value.length ? '#00E5FF' : '#FF4D4F',
+      delay: (i * 0.3) + 's',
+    })
+  })
+  return dots
+})
+
+// ---- 工具函数 ----
 function fmtTime(t) {
   if (!t) return ''
   return dayjs(t).format('MM-DD HH:mm')
 }
 
-function getPlatformName(code) {
-  const map = { qianchuan: '千川', kuaishou: '快手', adq: 'ADQ', all: '全平台' }
-  return map[code] || code
-}
-
-function getPlatformStat(code, type) {
-  const s = platformStats.value.find(p => p.platform === code && p.decision_type === type)
-  return s?.total || 0
+function fmtDuration(ms) {
+  if (!ms) return '--'
+  return ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's'
 }
 
 function getSeverity(a) {
@@ -378,7 +431,7 @@ function getSeverity(a) {
 function getAlertMsg(a) {
   try {
     const d = typeof a.decision_data === 'string' ? JSON.parse(a.decision_data) : a.decision_data
-    return d?.anomalies?.[0]?.message || d?.message || '异常'
+    return d?.anomalies?.[0]?.message || d?.adName || '异常检测'
   } catch { return '异常' }
 }
 
@@ -391,36 +444,24 @@ function getBidDirection(b) {
 function getBidFrom(b) {
   try {
     const d = typeof b.decision_data === 'string' ? JSON.parse(b.decision_data) : b.decision_data
-    return '¥' + (d?.currentBid || 0)
+    return (d?.currentBid || 0).toFixed(2)
   } catch { return '--' }
 }
 function getBidTo(b) {
   try {
     const d = typeof b.decision_data === 'string' ? JSON.parse(b.decision_data) : b.decision_data
-    return '¥' + (d?.newBid || 0)
+    return (d?.newBid || 0).toFixed(2)
   } catch { return '--' }
 }
 
-function getFatigueScore(f) {
-  try {
-    const d = typeof f.decision_data === 'string' ? JSON.parse(f.decision_data) : f.decision_data
-    return d?.score || 0
-  } catch { return 0 }
-}
-function getFatigueLevel(f) {
-  const s = getFatigueScore(f)
-  return s >= 80 ? 'fatigue-critical' : s >= 60 ? 'fatigue-warn' : 'fatigue-ok'
-}
-function getFatigueSuggestion(f) {
-  try {
-    const d = typeof f.decision_data === 'string' ? JSON.parse(f.decision_data) : f.decision_data
-    return d?.suggestion || '素材需关注'
-  } catch { return '素材需关注' }
+function typeLabel(t) {
+  const m = { bid_adjust: '出价调整', bid: '出价规则', creative_rotate: '素材轮换', creative: '素材规则', budget_pace: '预算控制', budget: '预算规则', anomaly_alert: '异常告警', alert: '告警规则', cold_start: '冷启动', ai_takeover: 'AI接管' }
+  return m[t] || t
 }
 
-function typeLabel(t) {
-  const m = { bid_adjust: '出价调整', bid: '出价规则', creative_rotate: '素材轮换', creative: '素材规则', budget_pace: '预算控制', budget: '预算规则', anomaly_alert: '异常告警', alert: '告警规则', cold_start: '冷启动' }
-  return m[t] || t
+function typeIcon(t) {
+  const m = { bid_adjust: '$', creative_rotate: '~', budget_pace: '%', anomaly_alert: '!', cold_start: '*' }
+  return m[t] || '>'
 }
 
 function phaseLabel(p) {
@@ -429,19 +470,23 @@ function phaseLabel(p) {
 }
 
 function paceLabel(s) {
-  const m = { normal: '正常', overspend: '消耗过快', underspend: '消耗过慢', unknown: '未知' }
+  const m = { normal: '正常', overspend: '超速', underspend: '偏慢' }
   return m[s] || s
 }
 
 function summarizeDecision(d) {
   try {
     const data = typeof d.decision_data === 'string' ? JSON.parse(d.decision_data) : d.decision_data
-    if (d.decision_type === 'bid_adjust') return `出价 ${data.currentBid} → ${data.newBid}，ROI目标${data.targetROI}`
-    if (d.decision_type === 'creative_rotate') return data.suggestion || `疲劳度${data.score}分`
-    if (d.decision_type === 'budget_pace') return data.action?.message || `偏差${(data.deviation * 100).toFixed(1)}%`
-    if (d.decision_type === 'anomaly_alert') return data.anomalies?.[0]?.message || '异常'
-    return JSON.stringify(data).slice(0, 80)
+    if (d.decision_type === 'bid_adjust') return `${data.adName || ''} 出价 ${data.currentBid} -> ${data.newBid}`
+    if (d.decision_type === 'creative_rotate') return data.suggestion || `疲劳度${data.score}`
+    if (d.decision_type === 'budget_pace') return data.action?.message || `偏差${((data.deviation || 0) * 100).toFixed(1)}%`
+    if (d.decision_type === 'anomaly_alert') return data.anomalies?.[0]?.message || data.adName || '异常'
+    return JSON.stringify(data).slice(0, 60)
   } catch { return '' }
+}
+
+function updateTime() {
+  currentTime.value = dayjs().format('YYYY-MM-DD HH:mm:ss')
 }
 
 // ---- API ----
@@ -451,17 +496,22 @@ async function loadStatus() {
     engineStatus.value = res.data.engine || {}
     engineRunning.value = !!engineStatus.value.is_running
     todayAnomalies.value = res.data.todayAnomalies || 0
-    if (res.data.todayDecisions) platformStats.value = res.data.todayDecisions
   } catch {}
 }
 
 async function loadOverview() {
   try {
     const res = await request.get('/ai-engine/dashboard/overview')
-    if (res.data.platformStats) platformStats.value = res.data.platformStats
     recentAnomalies.value = res.data.recentAnomalies || []
     recentBids.value = res.data.recentBids || []
     fatigueAlerts.value = res.data.fatigueAlerts || []
+  } catch {}
+}
+
+async function loadRecentDecisions() {
+  try {
+    const res = await request.get('/ai-engine/dashboard/decisions', { params: { platform: 'adq', page: 1, page_size: 10 } })
+    recentDecisions.value = res.data.list || []
   } catch {}
 }
 
@@ -496,10 +546,65 @@ async function loadTemplates() {
   } catch {}
 }
 
+async function loadAdqAccounts() {
+  try {
+    const res = await request.get('/adq/accounts')
+    const accounts = res.data || []
+    // 查询哪些账户已开启AI接管
+    const rulesRes = await request.get('/ai-engine/rules/list')
+    const aiRules = (rulesRes.data || []).filter(r => r.rule_type === 'ai_takeover' && r.is_active)
+    const aiAccountIds = new Set(aiRules.map(r => {
+      const cfg = typeof r.rule_config === 'string' ? JSON.parse(r.rule_config) : r.rule_config
+      return String(cfg?.accountDbId || '')
+    }))
+    adqAccounts.value = accounts.map(a => ({
+      ...a,
+      aiEnabled: aiAccountIds.has(String(a.id)),
+    }))
+  } catch {}
+}
+
+async function toggleAiTakeover(acc) {
+  try {
+    if (acc.aiEnabled) {
+      // 关闭：找到对应规则并删除
+      const rulesRes = await request.get('/ai-engine/rules/list')
+      const rule = (rulesRes.data || []).find(r => {
+        if (r.rule_type !== 'ai_takeover') return false
+        const cfg = typeof r.rule_config === 'string' ? JSON.parse(r.rule_config) : r.rule_config
+        return String(cfg?.accountDbId) === String(acc.id)
+      })
+      if (rule) await request.delete(`/ai-engine/rules/${rule.id}`)
+      acc.aiEnabled = false
+      message.success('已关闭AI接管')
+    } else {
+      // 开启：创建ai_takeover规则
+      await request.post('/ai-engine/rules/create', {
+        platform: 'adq',
+        rule_name: `AI接管-${acc.account_name || acc.id}`,
+        rule_type: 'ai_takeover',
+        rule_config: {
+          accountDbId: acc.id,
+          accountId: acc.account_id,
+          enableBidAdjust: true,
+          enableMaterialRotate: true,
+          enableBudgetPace: true,
+          enableAnomalyAlert: true,
+          targetCPA: 50,
+        },
+      })
+      acc.aiEnabled = true
+      message.success('AI接管已开启')
+    }
+  } catch (e) {
+    message.error('操作失败')
+  }
+}
+
 async function createFromTemplate(tpl) {
   try {
     await request.post('/ai-engine/rules/create', {
-      platform: tpl.config.platform || 'all',
+      platform: tpl.config?.platform || 'adq',
       rule_name: tpl.name,
       rule_type: tpl.type,
       rule_config: tpl.config,
@@ -521,7 +626,6 @@ async function deleteRule(id) {
   try {
     await request.delete(`/ai-engine/rules/${id}`)
     rules.value = rules.value.filter(r => r.id !== id)
-    message.success('已删除')
   } catch {}
 }
 
@@ -534,7 +638,6 @@ async function toggleEngine() {
   } catch {}
 }
 
-// 模拟器
 async function runBidSim() {
   simLoading.value = true
   try {
@@ -547,15 +650,8 @@ async function runColdSim() {
   simLoading.value = true
   try {
     const res = await request.post('/ai-engine/dashboard/simulate-coldstart', {
-      platform: simCold.platform,
-      adgroup: {
-        createTime: simCold.createTime || new Date(Date.now() - 48 * 3600000).toISOString(),
-        totalConversions: simCold.totalConversions,
-        totalImpressions: 10000,
-        totalCost: 500,
-        currentBid: simCold.currentBid,
-        dailyBudget: 300,
-      },
+      platform: 'adq',
+      adgroup: { createTime: simCold.createTime || new Date(Date.now() - 48 * 3600000).toISOString(), totalConversions: simCold.totalConversions, totalImpressions: 10000, totalCost: 500, currentBid: simCold.currentBid, dailyBudget: 300 },
     })
     simColdResult.value = res.data
   } catch {} finally { simLoading.value = false }
@@ -569,612 +665,1030 @@ async function runBudgetSim() {
   } catch {} finally { simLoading.value = false }
 }
 
+// ---- 生命周期 ----
 onMounted(() => {
+  updateTime()
+  timeTimer = setInterval(updateTime, 1000)
   loadStatus()
   loadOverview()
+  loadRecentDecisions()
   loadDecisions()
   loadRules()
   loadTemplates()
+  loadAdqAccounts()
+  // 每30秒刷新
+  const refreshTimer = setInterval(() => {
+    loadStatus()
+    loadOverview()
+    loadRecentDecisions()
+  }, 30000)
+  onUnmounted(() => {
+    clearInterval(timeTimer)
+    clearInterval(refreshTimer)
+  })
 })
 </script>
 
 <style scoped>
-/* ===== 深空蓝主题 ===== */
-.ai-engine {
-  min-height: 100vh;
-  background: #0F1923;
-  color: #E0E6ED;
-  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', 'PingFang SC', sans-serif;
-  padding-bottom: 40px;
-}
+/* ============================================ */
+/*  AI ADQ COMMAND CENTER - SCI-FI HUD THEME    */
+/* ============================================ */
 
-/* Hero */
-.hero {
-  position: relative;
-  background: linear-gradient(135deg, #0D1B2A 0%, #1B2838 100%);
-  padding: 20px 16px 16px;
-  overflow: hidden;
+@keyframes scanMove {
+  0% { top: -2px; }
+  100% { top: 100%; }
 }
-.hero-glow {
-  position: absolute;
-  top: -40px; right: -40px;
-  width: 160px; height: 160px;
-  background: radial-gradient(circle, rgba(0,229,255,0.15) 0%, transparent 70%);
-  pointer-events: none;
+@keyframes radarSweep {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
 }
-.hero-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
-}
-.hero-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 18px;
-  font-weight: 600;
-  color: #fff;
-}
-.hero-badge {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 12px;
-  border-radius: 20px;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.3s;
-}
-.badge-on {
-  background: rgba(0,229,255,0.15);
-  color: #00E5FF;
-  border: 1px solid rgba(0,229,255,0.3);
-}
-.badge-off {
-  background: rgba(255,107,53,0.15);
-  color: #FF6B35;
-  border: 1px solid rgba(255,107,53,0.3);
-}
-.badge-dot {
-  width: 6px; height: 6px;
-  border-radius: 50%;
-  display: inline-block;
-}
-.badge-on .badge-dot {
-  background: #00E5FF;
-  box-shadow: 0 0 6px #00E5FF;
-  animation: pulse 2s infinite;
-}
-.badge-off .badge-dot { background: #FF6B35; }
-
 @keyframes pulse {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  50% { opacity: 0.3; }
+}
+@keyframes glow {
+  0%, 100% { box-shadow: 0 0 5px currentColor; }
+  50% { box-shadow: 0 0 20px currentColor, 0 0 40px currentColor; }
+}
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes dotPulse {
+  0%, 100% { opacity: 0.3; r: 2; }
+  50% { opacity: 1; r: 4; }
+}
+@keyframes ringPulse {
+  0% { transform: scale(1); opacity: 0.6; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+@keyframes logoSpin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
 }
 
-.hero-metrics {
+.cmd-center {
+  min-height: 100vh;
+  background: #050a12;
+  color: #c8d6e5;
+  font-family: 'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace;
+  position: relative;
+  overflow-x: hidden;
+}
+
+/* 网格背景 */
+.bg-grid {
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(0,229,255,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,229,255,0.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* 扫描线 */
+.scan-line {
+  position: fixed;
+  left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(0,229,255,0.4), transparent);
+  animation: scanMove 4s linear infinite;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.particles {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ===== 顶部指挥栏 ===== */
+.cmd-header {
+  position: relative;
+  z-index: 5;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.06);
-  border-radius: 12px;
-  padding: 14px 8px;
+  padding: 12px 16px;
+  background: linear-gradient(180deg, rgba(5,10,18,0.95) 0%, rgba(5,10,18,0.7) 100%);
+  border-bottom: 1px solid rgba(0,229,255,0.15);
 }
-.hm-item {
-  flex: 1;
-  text-align: center;
+
+.hdr-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
-.hm-val {
-  font-size: 22px;
+
+.hdr-logo {
+  position: relative;
+  width: 36px;
+  height: 36px;
+}
+.logo-ring {
+  position: absolute;
+  inset: 0;
+  color: #00E5FF;
+}
+.logo-ring.spinning {
+  animation: logoSpin 8s linear infinite;
+}
+.logo-ring svg {
+  width: 100%;
+  height: 100%;
+}
+.logo-core {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 12px;
+  height: 12px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: #1a2940;
+  border: 1px solid #00E5FF;
+}
+.logo-core.active {
+  background: #00E5FF;
+  box-shadow: 0 0 10px #00E5FF, 0 0 20px rgba(0,229,255,0.3);
+}
+
+.hdr-titles h1 {
+  font-size: 14px;
   font-weight: 700;
   color: #fff;
-  font-variant-numeric: tabular-nums;
+  margin: 0;
+  letter-spacing: 1px;
 }
-.hm-val.anomaly { color: #FF6B35; }
-.hm-val.platform-count { color: #00E5FF; }
-.hm-label {
-  font-size: 11px;
-  color: rgba(255,255,255,0.45);
-  margin-top: 2px;
-}
-.hm-divider {
-  width: 1px;
-  height: 28px;
-  background: rgba(255,255,255,0.08);
-}
-.hero-time {
-  text-align: center;
-  font-size: 11px;
-  color: rgba(255,255,255,0.3);
-  margin-top: 10px;
-}
-
-/* Tab Bar */
-.tab-bar {
-  display: flex;
-  background: #0D1B2A;
-  border-bottom: 1px solid rgba(255,255,255,0.06);
-  position: sticky;
-  top: 0;
-  z-index: 10;
-}
-.tab-item {
-  flex: 1;
-  text-align: center;
-  padding: 12px 0;
-  font-size: 13px;
-  color: rgba(255,255,255,0.45);
-  cursor: pointer;
-  position: relative;
-  transition: color 0.3s;
-}
-.tab-item.active {
+.hdr-titles .accent {
   color: #00E5FF;
-  font-weight: 600;
 }
-.tab-item.active::after {
-  content: '';
-  position: absolute;
-  bottom: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 24px;
-  height: 2px;
-  background: #00E5FF;
-  border-radius: 1px;
-  box-shadow: 0 0 8px rgba(0,229,255,0.5);
+.hdr-sub {
+  font-size: 8px;
+  color: rgba(0,229,255,0.4);
+  letter-spacing: 2px;
+  margin-top: 1px;
 }
 
-.tab-content {
-  padding: 12px 16px;
-}
-
-/* Platform Cards */
-.platform-cards {
+.hdr-right {
   display: flex;
-  gap: 10px;
-  overflow-x: auto;
-  padding-bottom: 4px;
-  -webkit-overflow-scrolling: touch;
-}
-.pf-card {
-  min-width: 140px;
-  flex: 1;
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.06);
-  border-radius: 12px;
-  padding: 12px;
-  cursor: pointer;
-  transition: all 0.3s;
-  position: relative;
-  overflow: hidden;
-}
-.pf-card:active { transform: scale(0.97); }
-.pf-card-head {
-  display: flex;
-  justify-content: space-between;
   align-items: center;
-  margin-bottom: 10px;
+  gap: 10px;
 }
-.pf-name { font-size: 13px; font-weight: 600; color: #fff; }
-.pf-code { font-size: 10px; color: rgba(255,255,255,0.25); }
-.pf-card-stats {
-  display: flex;
-  gap: 8px;
+.hdr-time {
+  font-size: 10px;
+  color: rgba(0,229,255,0.5);
+  display: none;
 }
-.pf-stat { text-align: center; flex: 1; }
-.pf-stat-val { font-size: 16px; font-weight: 700; color: #fff; display: block; }
-.pf-stat-val.warn { color: #FF6B35; }
-.pf-stat-val.accent { color: #A78BFA; }
-.pf-stat-label { font-size: 10px; color: rgba(255,255,255,0.35); }
-.pf-glow-bar {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 2px;
-}
-.glow-qianchuan { background: linear-gradient(90deg, #1A6CFF, #00E5FF); box-shadow: 0 0 10px rgba(26,108,255,0.5); }
-.glow-kuaishou { background: linear-gradient(90deg, #FF6B35, #FFB800); box-shadow: 0 0 10px rgba(255,107,53,0.5); }
-.glow-adq { background: linear-gradient(90deg, #00E5FF, #00B96B); box-shadow: 0 0 10px rgba(0,229,255,0.5); }
 
-/* Section */
-.section { margin-top: 16px; }
-.section-title {
+.engine-btn {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 14px;
-  font-weight: 600;
-  color: rgba(255,255,255,0.85);
-  margin-bottom: 10px;
+  padding: 5px 12px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  cursor: pointer;
+  transition: all 0.3s;
+  font-family: inherit;
+  border: 1px solid rgba(255,77,79,0.5);
+  background: rgba(255,77,79,0.1);
+  color: #FF4D4F;
 }
-.empty-hint {
-  text-align: center;
-  color: rgba(255,255,255,0.2);
-  font-size: 13px;
-  padding: 24px 0;
+.engine-btn.on {
+  border-color: rgba(0,229,255,0.5);
+  background: rgba(0,229,255,0.1);
+  color: #00E5FF;
+}
+.ebtn-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #FF4D4F;
+}
+.engine-btn.on .ebtn-dot {
+  background: #00E5FF;
+  box-shadow: 0 0 8px #00E5FF;
+  animation: pulse 2s infinite;
 }
 
-/* Alert Items */
-.alert-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 10px 12px;
-  background: rgba(255,255,255,0.03);
-  border-radius: 10px;
-  margin-bottom: 8px;
-  border-left: 3px solid transparent;
+/* ===== 核心指标条 ===== */
+.metrics-bar {
+  position: relative;
+  z-index: 5;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  padding: 10px 16px;
 }
-.alert-critical { border-left-color: #FF4D4F; }
-.alert-warning { border-left-color: #FF8A00; }
-.alert-badge {
+
+.metric-box {
+  position: relative;
+  background: rgba(0,229,255,0.03);
+  border: 1px solid rgba(0,229,255,0.1);
+  padding: 10px 8px;
+  text-align: center;
+}
+
+.mbox-glow {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 40%;
+  height: 1px;
+  filter: blur(4px);
+  opacity: 0.8;
+}
+
+.mbox-val {
+  font-size: 20px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.mbox-label {
+  font-size: 9px;
+  color: rgba(200,214,229,0.4);
+  margin-top: 2px;
+  letter-spacing: 0.5px;
+}
+
+/* HUD角标 */
+.mbox-corner {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-color: rgba(0,229,255,0.3);
+  border-style: solid;
+  border-width: 0;
+}
+.mbox-corner.tl { top: -1px; left: -1px; border-top-width: 1px; border-left-width: 1px; }
+.mbox-corner.tr { top: -1px; right: -1px; border-top-width: 1px; border-right-width: 1px; }
+.mbox-corner.bl { bottom: -1px; left: -1px; border-bottom-width: 1px; border-left-width: 1px; }
+.mbox-corner.br { bottom: -1px; right: -1px; border-bottom-width: 1px; border-right-width: 1px; }
+
+/* ===== 主体三栏 ===== */
+.cmd-body {
+  position: relative;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 16px;
+}
+
+.panel { width: 100%; }
+
+/* ===== HUD卡片 ===== */
+.hud-card {
+  background: rgba(5,15,30,0.8);
+  border: 1px solid rgba(0,229,255,0.1);
+  padding: 12px;
+  margin-bottom: 10px;
+  position: relative;
+  animation: fadeInUp 0.4s ease;
+}
+.hud-card::before,
+.hud-card::after {
+  content: '';
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-color: rgba(0,229,255,0.25);
+  border-style: solid;
+  border-width: 0;
+}
+.hud-card::before {
+  top: -1px;
+  left: -1px;
+  border-top-width: 1px;
+  border-left-width: 1px;
+}
+.hud-card::after {
+  bottom: -1px;
+  right: -1px;
+  border-bottom-width: 1px;
+  border-right-width: 1px;
+}
+
+.hud-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #00E5FF;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(0,229,255,0.08);
+}
+
+.ht-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #00E5FF;
+  box-shadow: 0 0 6px #00E5FF;
+  animation: pulse 3s infinite;
+}
+.ht-dot.alert {
+  background: #FF4D4F;
+  box-shadow: 0 0 6px #FF4D4F;
+}
+.ht-dot.bid {
+  background: #00FF88;
+  box-shadow: 0 0 6px #00FF88;
+}
+
+.empty-state {
+  text-align: center;
+  color: rgba(200,214,229,0.2);
+  font-size: 11px;
+  padding: 20px 0;
+  letter-spacing: 1px;
+}
+
+/* ===== 账户列表 ===== */
+.account-list {
+  max-height: 200px;
+  overflow-y: auto;
+}
+.acc-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.acc-row:hover {
+  background: rgba(0,229,255,0.03);
+}
+.acc-name {
+  font-size: 12px;
+  color: #fff;
+}
+.acc-id {
   font-size: 10px;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-weight: 600;
-  flex-shrink: 0;
+  color: rgba(200,214,229,0.3);
   margin-top: 2px;
 }
-.alert-critical .alert-badge { background: rgba(255,77,79,0.15); color: #FF4D4F; }
-.alert-warning .alert-badge { background: rgba(255,138,0,0.15); color: #FF8A00; }
-.alert-msg { font-size: 13px; color: rgba(255,255,255,0.8); line-height: 1.5; }
-.alert-meta { font-size: 11px; color: rgba(255,255,255,0.3); margin-top: 4px; }
-
-/* Bid Items */
-.bid-item {
+.acc-switch {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  background: rgba(255,255,255,0.03);
-  border-radius: 10px;
-  margin-bottom: 8px;
+  gap: 6px;
+  font-size: 10px;
+  color: rgba(200,214,229,0.4);
 }
-.bid-direction {
+.acc-switch.sw-active {
+  color: #00E5FF;
+}
+.sw-track {
   width: 28px;
-  height: 28px;
-  border-radius: 8px;
+  height: 14px;
+  border-radius: 7px;
+  background: rgba(255,255,255,0.1);
+  position: relative;
+  transition: all 0.3s;
+}
+.sw-active .sw-track {
+  background: rgba(0,229,255,0.3);
+}
+.sw-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(200,214,229,0.5);
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  transition: all 0.3s;
+}
+.sw-active .sw-thumb {
+  left: 16px;
+  background: #00E5FF;
+  box-shadow: 0 0 6px #00E5FF;
+}
+
+/* ===== 异常行 ===== */
+.alert-row {
   display: flex;
   align-items: center;
-  justify-content: center;
-  font-size: 14px;
-  font-weight: 700;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+.alert-indicator {
+  position: relative;
+  width: 8px;
+  height: 8px;
   flex-shrink: 0;
 }
-.bid-up { background: rgba(0,229,255,0.12); color: #00E5FF; }
-.bid-down { background: rgba(0,185,107,0.12); color: #00B96B; }
-.bid-body { flex: 1; }
-.bid-change { font-size: 13px; color: rgba(255,255,255,0.8); font-weight: 500; }
-.bid-meta { font-size: 11px; color: rgba(255,255,255,0.3); margin-top: 2px; }
-.bid-pct { font-size: 13px; font-weight: 700; }
-.pct-up { color: #00E5FF; }
-.pct-down { color: #00B96B; }
+.alert-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #FF4D4F;
+}
+.severity-critical .alert-pulse {
+  animation: pulse 1s infinite;
+  box-shadow: 0 0 8px #FF4D4F;
+}
+.severity-warning .alert-pulse {
+  background: #FFB800;
+}
+.alert-content { flex: 1; min-width: 0; }
+.alert-msg {
+  font-size: 11px;
+  color: rgba(255,255,255,0.7);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.alert-time { font-size: 9px; color: rgba(200,214,229,0.25); margin-top: 1px; }
+.alert-level {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 2px 5px;
+  flex-shrink: 0;
+}
+.severity-critical .alert-level {
+  color: #FF4D4F;
+  background: rgba(255,77,79,0.1);
+  border: 1px solid rgba(255,77,79,0.2);
+}
+.severity-warning .alert-level {
+  color: #FFB800;
+  background: rgba(255,184,0,0.1);
+  border: 1px solid rgba(255,184,0,0.2);
+}
 
-/* Fatigue Items */
-.fatigue-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  background: rgba(255,255,255,0.03);
-  border-radius: 10px;
+/* ===== 雷达 ===== */
+.radar-container {
+  position: relative;
+  width: 100%;
+  max-width: 280px;
+  margin: 0 auto;
+  aspect-ratio: 1;
+}
+.radar-outer {
+  width: 100%;
+  height: 100%;
+}
+.radar-svg {
+  width: 100%;
+  height: 100%;
+}
+.radar-sweep {
+  transform-origin: 150px 150px;
+  animation: radarSweep 4s linear infinite;
+}
+.radar-dot {
+  animation: dotPulse 2s ease infinite;
+}
+.radar-core {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+}
+.core-ring {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 60px;
+  height: 60px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 1px solid rgba(0,229,255,0.2);
+}
+.core-ring.active::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 1px solid rgba(0,229,255,0.15);
+  animation: ringPulse 2s ease infinite;
+}
+.core-text {
+  position: relative;
+  z-index: 2;
+}
+.core-status {
+  font-size: 8px;
+  letter-spacing: 2px;
+  font-weight: 700;
+}
+.status-on { color: #00E5FF; }
+.status-off { color: #FF4D4F; }
+.core-num {
+  font-size: 24px;
+  font-weight: 900;
+  color: #fff;
+  line-height: 1;
+  margin: 2px 0;
+}
+.core-label {
+  font-size: 7px;
+  color: rgba(200,214,229,0.3);
+  letter-spacing: 2px;
+}
+
+/* 引擎状态条 */
+.engine-stats {
+  margin-top: 12px;
+}
+.estat {
   margin-bottom: 8px;
 }
-.fatigue-score {
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
+.estat-bar {
+  height: 3px;
+  background: rgba(255,255,255,0.05);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.estat-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.6s ease;
+  box-shadow: 0 0 6px currentColor;
+}
+.estat-info {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 3px;
+}
+.estat-label {
+  font-size: 9px;
+  color: rgba(200,214,229,0.3);
+  letter-spacing: 0.5px;
+}
+.estat-val {
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* ===== 决策流 ===== */
+.decision-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+  animation: fadeInUp 0.3s ease;
+}
+.drow-type {
+  width: 22px;
+  height: 22px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 15px;
+  font-size: 10px;
+  font-weight: 900;
+  flex-shrink: 0;
+  border: 1px solid;
+}
+.dtype-bid_adjust { color: #00E5FF; border-color: rgba(0,229,255,0.3); background: rgba(0,229,255,0.05); }
+.dtype-creative_rotate { color: #A78BFA; border-color: rgba(167,139,250,0.3); background: rgba(167,139,250,0.05); }
+.dtype-budget_pace { color: #00FF88; border-color: rgba(0,255,136,0.3); background: rgba(0,255,136,0.05); }
+.dtype-anomaly_alert { color: #FF4D4F; border-color: rgba(255,77,79,0.3); background: rgba(255,77,79,0.05); }
+.dtype-cold_start { color: #FFB800; border-color: rgba(255,184,0,0.3); background: rgba(255,184,0,0.05); }
+
+.drow-body { flex: 1; min-width: 0; }
+.drow-msg {
+  font-size: 11px;
+  color: rgba(255,255,255,0.7);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.drow-time { font-size: 9px; color: rgba(200,214,229,0.25); margin-top: 1px; }
+.drow-status {
+  font-size: 8px;
   font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 2px 5px;
   flex-shrink: 0;
 }
-.fatigue-critical { background: rgba(255,77,79,0.15); color: #FF4D4F; }
-.fatigue-warn { background: rgba(255,138,0,0.15); color: #FF8A00; }
-.fatigue-ok { background: rgba(0,229,255,0.1); color: #00E5FF; }
-.fatigue-body { flex: 1; }
-.fatigue-msg { font-size: 13px; color: rgba(255,255,255,0.8); }
-.fatigue-meta { font-size: 11px; color: rgba(255,255,255,0.3); margin-top: 2px; }
+.exec-ok { color: #00FF88; border: 1px solid rgba(0,255,136,0.2); background: rgba(0,255,136,0.05); }
+.exec-wait { color: rgba(200,214,229,0.3); border: 1px solid rgba(200,214,229,0.1); }
 
-/* Decisions */
-.filter-row {
+/* ===== 出价行 ===== */
+.bid-row {
   display: flex;
+  align-items: center;
   gap: 8px;
-  margin-bottom: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
 }
-.ds-select {
+.bid-arrow {
+  font-size: 10px;
+  width: 20px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.arrow-up { color: #00E5FF; }
+.arrow-down { color: #00FF88; }
+.bid-info { flex: 1; }
+.bid-change { font-size: 11px; color: rgba(255,255,255,0.7); }
+.bid-to { color: rgba(0,229,255,0.5); }
+.bid-time { font-size: 9px; color: rgba(200,214,229,0.25); margin-top: 1px; }
+.bid-pct { font-size: 11px; font-weight: 700; flex-shrink: 0; }
+.pct-up { color: #00E5FF; }
+.pct-dn { color: #00FF88; }
+
+/* ===== 底部Tab ===== */
+.bottom-section {
+  position: relative;
+  z-index: 5;
+  margin: 10px 16px 40px;
+  border: 1px solid rgba(0,229,255,0.1);
+  background: rgba(5,15,30,0.8);
+}
+
+.btab-bar {
+  display: flex;
+  border-bottom: 1px solid rgba(0,229,255,0.08);
+}
+.btab {
   flex: 1;
-  background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(255,255,255,0.1);
-  border-radius: 8px;
-  color: #E0E6ED;
-  padding: 8px 10px;
-  font-size: 13px;
+  text-align: center;
+  padding: 10px 0;
+  font-size: 11px;
+  color: rgba(200,214,229,0.3);
+  cursor: pointer;
+  letter-spacing: 0.5px;
+  transition: all 0.3s;
+  border-bottom: 2px solid transparent;
+}
+.btab.active {
+  color: #00E5FF;
+  border-bottom-color: #00E5FF;
+  background: rgba(0,229,255,0.03);
+}
+.btab-icon {
+  margin-right: 4px;
+}
+
+.btab-content {
+  padding: 12px;
+}
+
+/* 规则网格 */
+.rules-toolbar {
+  margin-bottom: 10px;
+}
+.rules-grid {
+  display: grid;
+  gap: 8px;
+}
+.rule-item {
+  background: rgba(0,229,255,0.02);
+  border: 1px solid rgba(0,229,255,0.08);
+  padding: 10px;
+}
+.ri-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.ri-name { font-size: 12px; color: #fff; font-weight: 600; }
+.ri-toggle {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 8px;
+  cursor: pointer;
+  letter-spacing: 0.5px;
+}
+.tog-on { color: #00E5FF; border: 1px solid rgba(0,229,255,0.3); background: rgba(0,229,255,0.05); }
+.tog-off { color: rgba(200,214,229,0.3); border: 1px solid rgba(200,214,229,0.1); }
+.ri-type { font-size: 10px; color: rgba(200,214,229,0.3); margin-top: 4px; }
+.ri-del { font-size: 10px; color: #FF4D4F; cursor: pointer; margin-top: 6px; letter-spacing: 0.5px; }
+
+/* 决策表格 */
+.filter-bar { margin-bottom: 10px; }
+.hud-select {
+  background: rgba(0,229,255,0.03);
+  border: 1px solid rgba(0,229,255,0.15);
+  color: #c8d6e5;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-family: inherit;
   -webkit-appearance: none;
 }
-.ds-select option { background: #1B2838; color: #E0E6ED; }
+.hud-select option { background: #0a1628; }
 
-.decision-card {
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.06);
-  border-radius: 10px;
-  padding: 12px;
-  margin-bottom: 8px;
-}
-.dc-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-.dc-type {
+.decision-table { }
+.dtable-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
   font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-weight: 600;
 }
-.dc-bid_adjust { background: rgba(0,229,255,0.12); color: #00E5FF; }
-.dc-creative_rotate { background: rgba(167,139,250,0.15); color: #A78BFA; }
-.dc-budget_pace { background: rgba(0,185,107,0.12); color: #00B96B; }
-.dc-anomaly_alert { background: rgba(255,77,79,0.12); color: #FF4D4F; }
-.dc-cold_start { background: rgba(255,184,0,0.12); color: #FFB800; }
-.dc-time { font-size: 11px; color: rgba(255,255,255,0.3); }
-.dc-platform { font-size: 12px; color: rgba(255,255,255,0.4); margin-bottom: 4px; }
-.dc-detail { font-size: 13px; color: rgba(255,255,255,0.7); line-height: 1.5; }
-.dc-exec {
-  font-size: 11px;
-  margin-top: 6px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  display: inline-block;
+.dt-type {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 6px;
+  flex-shrink: 0;
+  border: 1px solid;
 }
-.exec-done { background: rgba(0,185,107,0.1); color: #00B96B; }
-.exec-pending { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.35); }
+.dt-detail {
+  flex: 1;
+  color: rgba(255,255,255,0.6);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dt-time { font-size: 9px; color: rgba(200,214,229,0.25); flex-shrink: 0; }
+.dt-exec { font-size: 8px; font-weight: 700; padding: 2px 5px; flex-shrink: 0; }
 
 .load-more {
   text-align: center;
   color: #00E5FF;
-  font-size: 13px;
-  padding: 12px;
+  font-size: 10px;
+  padding: 10px;
   cursor: pointer;
+  letter-spacing: 1px;
 }
 
-/* Rules */
-.rules-head {
+/* 模拟器 */
+.sim-mode-bar {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  gap: 8px;
   margin-bottom: 12px;
 }
-.ds-btn {
-  background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(255,255,255,0.1);
-  border-radius: 8px;
-  color: #00E5FF;
-  padding: 8px 14px;
-  font-size: 13px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-.ds-btn:active { transform: scale(0.96); }
-.ds-btn.primary {
-  background: linear-gradient(135deg, #1A6CFF, #00B4D8);
-  border: none;
-  color: #fff;
-  font-weight: 600;
-  width: 100%;
-  padding: 12px;
-  margin-top: 12px;
-}
-.ds-btn.primary:disabled { opacity: 0.5; }
-
-.rule-card {
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.06);
-  border-radius: 10px;
-  padding: 12px;
-  margin-bottom: 8px;
-}
-.rule-head { display: flex; justify-content: space-between; align-items: center; }
-.rule-name { font-size: 14px; font-weight: 600; color: #fff; }
-.rule-switch {
+.sim-mode-bar span {
+  padding: 5px 12px;
   font-size: 11px;
-  padding: 3px 10px;
-  border-radius: 12px;
-  font-weight: 700;
   cursor: pointer;
+  color: rgba(200,214,229,0.3);
+  border: 1px solid rgba(200,214,229,0.1);
   transition: all 0.2s;
 }
-.sw-on { background: rgba(0,229,255,0.15); color: #00E5FF; }
-.sw-off { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.3); }
-.rule-type { font-size: 12px; color: rgba(255,255,255,0.4); margin-top: 4px; }
-.rule-actions { margin-top: 8px; }
-.rule-del { font-size: 12px; color: #FF4D4F; cursor: pointer; }
-
-/* Modal */
-.modal-mask {
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,0.7);
-  z-index: 100;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-}
-.modal-body {
-  background: #1B2838;
-  border-radius: 16px 16px 0 0;
-  padding: 20px 16px 32px;
-  width: 100%;
-  max-width: 480px;
-  max-height: 70vh;
-  overflow-y: auto;
-}
-.modal-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: #fff;
-  margin-bottom: 16px;
-  text-align: center;
-}
-.modal-close { width: 100%; margin-top: 16px; }
-
-.tpl-card {
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 10px;
-  padding: 12px;
-  margin-bottom: 8px;
-  cursor: pointer;
-  transition: border-color 0.2s;
-}
-.tpl-card:active { border-color: #00E5FF; }
-.tpl-name { font-size: 14px; font-weight: 600; color: #fff; }
-.tpl-desc { font-size: 12px; color: rgba(255,255,255,0.5); margin-top: 4px; line-height: 1.5; }
-.tpl-type { font-size: 11px; color: #00E5FF; margin-top: 6px; }
-
-/* Simulator */
-.sim-tabs {
-  display: flex;
-  gap: 12px;
-  margin-bottom: 16px;
-}
-.sim-tabs span {
-  padding: 6px 14px;
-  border-radius: 20px;
-  font-size: 13px;
-  background: rgba(255,255,255,0.04);
-  color: rgba(255,255,255,0.5);
-  cursor: pointer;
-  transition: all 0.2s;
-}
-.sim-tabs span.active {
-  background: rgba(0,229,255,0.12);
+.sim-mode-bar span.active {
   color: #00E5FF;
+  border-color: rgba(0,229,255,0.3);
+  background: rgba(0,229,255,0.05);
 }
 
-.sim-panel { /* card style */ }
-.sim-field {
-  margin-bottom: 12px;
+.sim-form {
+  max-width: 400px;
 }
-.sim-field label {
+.sf-row {
+  margin-bottom: 10px;
+}
+.sf-row label {
   display: block;
-  font-size: 12px;
-  color: rgba(255,255,255,0.5);
+  font-size: 10px;
+  color: rgba(200,214,229,0.4);
   margin-bottom: 4px;
+  letter-spacing: 0.5px;
 }
-.ds-input {
+.hud-input {
   width: 100%;
-  background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(255,255,255,0.1);
-  border-radius: 8px;
-  color: #E0E6ED;
-  padding: 10px 12px;
-  font-size: 14px;
+  background: rgba(0,229,255,0.03);
+  border: 1px solid rgba(0,229,255,0.15);
+  color: #c8d6e5;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-family: inherit;
   box-sizing: border-box;
   -webkit-appearance: none;
 }
-.ds-input:focus { border-color: #00E5FF; outline: none; box-shadow: 0 0 0 2px rgba(0,229,255,0.1); }
+.hud-input:focus {
+  border-color: #00E5FF;
+  outline: none;
+  box-shadow: 0 0 0 1px rgba(0,229,255,0.1);
+}
 
-.sim-result {
-  margin-top: 16px;
-  background: rgba(0,229,255,0.04);
-  border: 1px solid rgba(0,229,255,0.12);
-  border-radius: 12px;
-  padding: 14px;
-}
-.sim-result-title {
-  font-size: 13px;
-  font-weight: 600;
+.neon-btn {
+  background: rgba(0,229,255,0.05);
+  border: 1px solid rgba(0,229,255,0.3);
   color: #00E5FF;
-  margin-bottom: 10px;
+  padding: 7px 14px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.2s;
 }
-.sim-kv {
+.neon-btn:hover {
+  background: rgba(0,229,255,0.1);
+  box-shadow: 0 0 10px rgba(0,229,255,0.2);
+}
+.neon-btn.primary {
+  background: linear-gradient(135deg, rgba(0,229,255,0.2), rgba(0,180,216,0.2));
+  width: 100%;
+  padding: 10px;
+  margin-top: 10px;
+}
+.neon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.sim-output {
+  margin-top: 12px;
+  border: 1px solid rgba(0,229,255,0.1);
+  padding: 10px;
+  background: rgba(0,229,255,0.02);
+}
+.so-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: #00E5FF;
+  letter-spacing: 1px;
+  margin-bottom: 8px;
+}
+.so-row {
   display: flex;
   justify-content: space-between;
-  padding: 6px 0;
-  font-size: 13px;
-  border-bottom: 1px solid rgba(255,255,255,0.04);
+  padding: 4px 0;
+  font-size: 11px;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
 }
-.sim-kv span { color: rgba(255,255,255,0.5); }
-.sim-kv strong { color: #fff; font-weight: 600; }
+.so-row span { color: rgba(200,214,229,0.4); }
+.so-row strong { color: #fff; }
 .val-up { color: #00E5FF !important; }
-.val-down { color: #00B96B !important; }
+.val-dn { color: #00FF88 !important; }
 
-.phase-tag {
-  padding: 1px 8px;
-  border-radius: 4px;
-  font-size: 12px;
-}
-.phase-exploring { background: rgba(255,184,0,0.15); color: #FFB800; }
-.phase-accelerating { background: rgba(0,229,255,0.12); color: #00E5FF; }
-.phase-graduated { background: rgba(0,185,107,0.12); color: #00B96B; }
-.phase-failed { background: rgba(255,77,79,0.12); color: #FF4D4F; }
+.phase-tag { padding: 1px 6px; font-size: 10px; }
+.phase-exploring { background: rgba(255,184,0,0.1); color: #FFB800; }
+.phase-accelerating { background: rgba(0,229,255,0.1); color: #00E5FF; }
+.phase-graduated { background: rgba(0,255,136,0.1); color: #00FF88; }
+.phase-failed { background: rgba(255,77,79,0.1); color: #FF4D4F; }
 
-.pace-tag {
-  padding: 1px 8px;
-  border-radius: 4px;
-  font-size: 12px;
-}
-.pace-normal { background: rgba(0,185,107,0.12); color: #00B96B; }
-.pace-overspend { background: rgba(255,77,79,0.12); color: #FF4D4F; }
-.pace-underspend { background: rgba(255,184,0,0.15); color: #FFB800; }
+.pace-tag { padding: 1px 6px; font-size: 10px; }
+.pace-normal { background: rgba(0,255,136,0.1); color: #00FF88; }
+.pace-overspend { background: rgba(255,77,79,0.1); color: #FF4D4F; }
+.pace-underspend { background: rgba(255,184,0,0.1); color: #FFB800; }
 
-.sim-advice {
-  margin-top: 10px;
-  background: rgba(255,255,255,0.03);
-  border-radius: 8px;
-  padding: 10px 12px;
+.so-advice {
+  margin-top: 8px;
+  padding: 8px;
+  background: rgba(255,255,255,0.02);
 }
-.sim-advice-title {
-  font-size: 12px;
-  color: rgba(255,255,255,0.5);
-  margin-bottom: 6px;
-}
-.sim-advice-item {
-  font-size: 13px;
-  color: rgba(255,255,255,0.75);
+.so-advice-item {
+  font-size: 11px;
+  color: rgba(200,214,229,0.6);
   line-height: 1.8;
-  padding-left: 12px;
+  padding-left: 10px;
   position: relative;
 }
-.sim-advice-item::before {
-  content: '›';
+.so-advice-item::before {
+  content: '>';
   position: absolute;
   left: 0;
   color: #00E5FF;
 }
 
-/* ===== 桌面端适配 ===== */
-@media (min-width: 768px) {
-  .ai-engine {
-    max-width: 960px;
-    margin: 0 auto;
-    padding: 0 24px 40px;
+/* 模板弹窗 */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.8);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.modal-hud {
+  background: #0a1628;
+  border: 1px solid rgba(0,229,255,0.2);
+  padding: 20px;
+  width: 100%;
+  max-width: 420px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+.modal-hud-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #00E5FF;
+  letter-spacing: 1px;
+  margin-bottom: 14px;
+  text-align: center;
+}
+.tpl-row {
+  padding: 10px;
+  border: 1px solid rgba(0,229,255,0.08);
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.tpl-row:hover {
+  border-color: rgba(0,229,255,0.3);
+  background: rgba(0,229,255,0.03);
+}
+.tpl-name { font-size: 12px; color: #fff; font-weight: 600; }
+.tpl-desc { font-size: 10px; color: rgba(200,214,229,0.4); margin-top: 4px; line-height: 1.5; }
+
+/* 返回按钮 */
+.back-btn {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  z-index: 50;
+  color: rgba(0,229,255,0.5);
+  font-size: 11px;
+  text-decoration: none;
+  padding: 5px 10px;
+  border: 1px solid rgba(0,229,255,0.15);
+  background: rgba(5,15,30,0.9);
+  font-family: inherit;
+  letter-spacing: 0.5px;
+}
+.back-btn:hover {
+  color: #00E5FF;
+  border-color: rgba(0,229,255,0.4);
+}
+
+/* ===== 桌面端 ===== */
+@media (min-width: 1024px) {
+  .cmd-header {
+    padding: 14px 32px;
   }
-  .hero {
-    border-radius: 0 0 16px 16px;
-    padding: 28px 24px 20px;
+  .hdr-titles h1 {
+    font-size: 18px;
   }
-  .hero-metrics { padding: 18px 24px; }
-  .hm-val { font-size: 28px; }
-  .tab-bar {
-    border-radius: 12px;
-    margin-top: 12px;
-    background: rgba(13,27,42,0.95);
+  .hdr-sub {
+    font-size: 9px;
   }
-  .tab-content { padding: 16px 0; }
-  .platform-cards { gap: 14px; }
-  .pf-card { min-width: 180px; padding: 16px; }
-  .modal-mask { align-items: center; }
-  .modal-body {
-    border-radius: 16px;
-    max-width: 520px;
-    max-height: 80vh;
+  .hdr-time {
+    display: block;
   }
-  .filter-row { max-width: 400px; }
-  .sim-panel { max-width: 480px; }
+  .metrics-bar {
+    padding: 12px 32px;
+    gap: 12px;
+  }
+  .mbox-val {
+    font-size: 28px;
+  }
+  .cmd-body {
+    flex-direction: row;
+    padding: 10px 32px;
+    gap: 16px;
+  }
+  .panel-left,
+  .panel-right {
+    width: 30%;
+    flex-shrink: 0;
+  }
+  .panel-center {
+    flex: 1;
+  }
+  .radar-container {
+    max-width: 320px;
+  }
+  .bottom-section {
+    margin: 16px 32px 60px;
+  }
+  .btab-content {
+    padding: 16px;
+  }
+  .rules-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .sim-form {
+    max-width: 500px;
+  }
+  .decision-table {
+    max-height: 400px;
+    overflow-y: auto;
+  }
+}
+
+@media (min-width: 1440px) {
+  .cmd-header { padding: 16px 48px; }
+  .metrics-bar { padding: 14px 48px; }
+  .cmd-body { padding: 12px 48px; }
+  .bottom-section { margin: 20px 48px 60px; }
+  .radar-container { max-width: 360px; }
+  .rules-grid { grid-template-columns: repeat(3, 1fr); }
+}
+
+/* 手机端优化 */
+@media (max-width: 480px) {
+  .metrics-bar {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .hdr-titles h1 {
+    font-size: 12px;
+  }
+  .radar-container {
+    max-width: 220px;
+  }
 }
 </style>

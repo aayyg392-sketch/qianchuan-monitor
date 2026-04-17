@@ -6,7 +6,7 @@ const router = require('express').Router();
 const db = require('../../db');
 const logger = require('../../logger');
 const auth = require('../../middleware/auth');
-const { PLATFORMS } = require('../config');
+const { ADQ_RULES } = require('../config');
 
 /**
  * GET /api/ai-engine/rules/list — 规则列表
@@ -45,8 +45,8 @@ router.post('/create', auth(), async (req, res) => {
     }
 
     // 验证平台
-    if (platform !== 'all' && !PLATFORMS[platform]) {
-      return res.json({ code: -1, msg: '不支持的平台' });
+    if (platform !== 'all' && platform !== 'adq') {
+      return res.json({ code: -1, msg: '不支持的平台，仅支持adq' });
     }
 
     await db.query(
@@ -157,17 +157,6 @@ router.get('/templates', auth(), async (req, res) => {
         costSpikeRatio: 2.0,
         conversionDropRatio: 0.5,
         zScoreThreshold: 2.5,
-      },
-    },
-    {
-      name: '千川冷启动加速',
-      type: 'bid',
-      description: '千川新计划出价上浮20%，加速过冷启动',
-      config: {
-        platform: 'qianchuan',
-        boostRatio: 1.2,
-        maxBoostHours: 96,
-        minConversions: 20,
       },
     },
     {
