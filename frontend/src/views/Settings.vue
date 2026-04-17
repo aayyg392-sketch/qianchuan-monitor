@@ -375,78 +375,28 @@
                 <a-button type="primary" block @click="saveAdqConfig">保存配置</a-button>
               </a-form>
               <div class="api-config-divider"></div>
-              <div class="api-config-subtitle">添加账户</div>
-              <!-- Token已保存状态 -->
-              <div v-if="adqTokenSaved" style="margin-bottom:16px;padding:12px;background:#f6ffed;border:1px solid #b7eb8f;border-radius:6px">
-                <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-                  <span style="color:#52c41a;font-size:16px;font-weight:bold">✓</span>
-                  <span style="font-size:13px;font-weight:600;color:#389e0d">组织Token已保存</span>
-                </div>
-                <div style="font-size:12px;color:#8c8c8c;line-height:1.8">
-                  已关联 {{ adqConfig.accounts?.length || 0 }} 个子账户，Token有效期至 {{ adqTokenExpire }}<br/>
-                  <span style="color:#1677ff">系统每6小时自动检查并刷新Token，无需手动操作</span>
-                </div>
-                <a-button size="small" style="margin-top:8px" @click="adqTokenSaved=false">更新Token</a-button>
+              <div class="api-config-subtitle">添加账户（私有应用模式）</div>
+              <div style="margin-bottom:12px;font-size:12px;color:#8c8c8c;line-height:1.8">
+                1. 前往<a href="https://developers.e.qq.com/console" target="_blank" style="color:#1677ff"> 腾讯广告开放平台 </a>→ 管理工具 → 应用信息<br/>
+                2. 在「token获取」选择账号，获取 authorization_code<br/>
+                3. 粘贴到下方输入框，点击「添加账户」
               </div>
-              <!-- 组织Token方式（推荐） -->
-              <div v-else style="margin-bottom:16px;padding:12px;background:#f6f9ff;border-radius:6px">
-                <div style="font-size:13px;font-weight:600;margin-bottom:8px">粘贴组织Token（一键关联所有子账户）</div>
-                <div style="font-size:12px;color:#8c8c8c;margin-bottom:10px;line-height:1.8">
-                  1. 打开 <a href="https://developers.e.qq.com" target="_blank">开发者后台</a> → 应用管理 → Token获取<br/>
-                  2. 身份选择：选择<b>「客户工作台/集团」</b>身份（不要选单个广告主）<br/>
-                  3. 复制 access_token 和 refresh_token 粘贴到下方<br/>
-                  <span style="color:#fa8c16">⚠ 组织token可一次性关联该组织下全部子账户</span>
-                </div>
-                <div style="display:flex;flex-direction:column;gap:8px">
-                  <a-input v-model:value="adqAccessToken" placeholder="粘贴 access_token" />
-                  <a-input v-model:value="adqRefreshToken" placeholder="粘贴 refresh_token（建议填写，用于自动续期）" />
-                  <a-button type="primary" :loading="adqExchanging" @click="doAdqExchange" block>添加并发现子账户</a-button>
-                </div>
+              <div style="display:flex;gap:8px;margin-bottom:16px">
+                <a-input v-model:value="adqAuthCode" placeholder="粘贴authorization_code" style="flex:1" />
+                <a-button type="primary" :loading="adqExchanging" @click="doAdqExchange">添加账户</a-button>
               </div>
-              <!-- 发现到的账户预览 -->
-              <div v-if="adqDiscovered.length" style="margin-bottom:16px">
-                <div style="font-size:13px;color:#595959;margin-bottom:8px">发现 {{ adqDiscovered.length }} 个账户：</div>
-                <div style="max-height:200px;overflow-y:auto;border:1px solid #f0f0f0;border-radius:6px;padding:8px">
-                  <div v-for="a in adqDiscovered" :key="a.account_id" style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px;border-bottom:1px solid #fafafa">
-                    <span>{{ a.account_name || '-' }}</span>
-                    <span style="color:#8c8c8c">{{ a.account_id }}</span>
-                  </div>
-                </div>
-              </div>
-              <!-- 手动输入备选 -->
-              <a-collapse :bordered="false" style="margin-bottom:16px;background:transparent">
-                <a-collapse-panel key="manual" header="手动输入账户ID">
-                  <a-textarea v-model:value="adqAccountId" placeholder="广告主账户ID（多个用逗号或换行分隔）" :rows="2" style="margin-bottom:8px" />
-                  <a-button type="primary" :loading="adqExchanging" @click="doAdqExchangeManual" block size="small">添加指定账户</a-button>
-                </a-collapse-panel>
-              </a-collapse>
               <div class="api-config-divider"></div>
-              <div class="api-config-subtitle">已授权账户 ({{ adqConfig.accounts?.length || 0 }})</div>
+              <div class="api-config-subtitle">已授权账户</div>
               <div v-if="adqConfig.accounts?.length" class="api-accounts-list">
-                <div class="api-account-item" v-for="acc in adqConfig.accounts" :key="acc.account_id || acc.id" style="display:flex;justify-content:space-between;align-items:center">
-                  <div>
-                    <div class="api-account-name">{{ acc.account_name || acc.account_id }} <span style="color:#8c8c8c;font-size:12px">ID: {{ acc.account_id }}</span></div>
-                    <div class="api-account-meta">
-                      <a-tag :color="acc.status === 1 ? 'green' : acc.token_expires_at ? 'orange' : 'default'" size="small">
-                        {{ acc.status === 1 ? '正常' : (acc.token_expires_at ? '停用' : '待绑定Token') }}
-                      </a-tag>
-                      <span class="api-account-expire" v-if="acc.token_expires_at">Token有效期至 {{ acc.token_expires_at?.substring(0, 16) }}</span>
-                    </div>
+                <div class="api-account-item" v-for="acc in adqConfig.accounts" :key="acc.account_id || acc.id">
+                  <div class="api-account-name">{{ acc.account_name || acc.account_id }} <span style="color:#8c8c8c;font-size:12px">ID: {{ acc.account_id }}</span></div>
+                  <div class="api-account-meta">
+                    <a-tag :color="acc.status === 1 ? 'green' : 'default'" size="small">{{ acc.status === 1 ? '正常' : '停用' }}</a-tag>
+                    <span class="api-account-expire" v-if="acc.token_expires_at">Token有效期至 {{ acc.token_expires_at?.substring(0, 16) }}</span>
                   </div>
-                  <a-button v-if="!acc.token_expires_at" size="small" type="link" @click="bindTokenFor(acc)">绑定Token</a-button>
-                  <a-button v-else size="small" type="link" @click="bindTokenFor(acc)">更新Token</a-button>
                 </div>
               </div>
               <a-empty v-else description="暂无授权账户" :image-style="{ height: '40px' }" />
-
-              <!-- 绑定Token弹窗 -->
-              <a-modal v-model:open="bindTokenVisible" :title="'绑定Token - ' + bindTokenAcct.account_id" @ok="doBindToken" ok-text="确认绑定" :confirm-loading="bindTokenLoading">
-                <p style="font-size:12px;color:#8c8c8c;margin-bottom:12px">
-                  在开发者后台Token获取中选择账户「{{ bindTokenAcct.account_id }}」，复制token粘贴到下方
-                </p>
-                <a-input v-model:value="bindTokenVal" placeholder="粘贴 access_token" style="margin-bottom:8px" />
-                <a-input v-model:value="bindRefreshVal" placeholder="粘贴 refresh_token（选填）" />
-              </a-modal>
             </div>
           </a-spin>
         </a-tab-pane>
@@ -487,15 +437,9 @@ const tiktokConfig = ref({ accounts: [] })
 const douyinShopForm = reactive({ app_key: '', app_secret: '' })
 const douyinShopConfig = ref({ accounts: [] })
 const adqForm = reactive({ app_id: '', app_secret: '' })
-const adqAccountId = ref('')
-const adqAccessToken = ref('')
-const adqRefreshToken = ref('')
+const adqAuthCode = ref('')
 const adqExchanging = ref(false)
-const adqDiscovering = ref(false)
-const adqDiscovered = ref([])
 const adqConfig = ref({ accounts: [] })
-const adqTokenSaved = ref(false)
-const adqTokenExpire = ref('')
 const marketingForm = reactive({ marketing_app_id: '', marketing_app_secret: '' })
 const wxChannelsForm = reactive({ app_id: '', app_secret: '' })
 const wxShopForm = reactive({ app_id: '', app_secret: '' })
@@ -736,116 +680,22 @@ async function saveAdqConfig() {
   } catch (e) { message.error('保存失败') }
 }
 
-async function doOAuthAuthorize() {
-  try {
-    const res = await request.get('/adq/oauth-url')
-    const url = res?.data?.url
-    if (!url) return message.error('获取授权链接失败')
-    // 监听授权完成消息
-    const handler = (e) => {
-      if (e.data === 'adq-oauth-done') {
-        loadAdqAccounts()
-        window.removeEventListener('message', handler)
-      }
-    }
-    window.addEventListener('message', handler)
-    window.open(url, '_blank', 'width=800,height=600')
-  } catch (e) { message.error('获取授权链接失败') }
-}
-
-async function doAdqDiscover() {
-  if (!adqAccessToken.value.trim()) return message.warning('请输入access_token')
-  adqDiscovering.value = true
-  adqDiscovered.value = []
-  try {
-    const res = await request.post('/adq/discover-accounts', { access_token: adqAccessToken.value.trim() })
-    const accounts = res?.data?.accounts || []
-    if (accounts.length) {
-      adqDiscovered.value = accounts
-      message.success(`发现 ${accounts.length} 个账户`)
-    } else {
-      message.warning('未发现账户，请确认Token来自组织身份，或使用下方手动输入')
-    }
-  } catch (e) { message.error('发现失败: ' + (e.response?.data?.msg || e.message)) }
-  adqDiscovering.value = false
-}
-
 async function doAdqExchange() {
-  if (!adqAccessToken.value.trim()) return message.warning('请输入access_token')
+  if (!adqAuthCode.value.trim()) return message.warning('请输入authorization_code')
   adqExchanging.value = true
   try {
-    const res = await request.post('/adq/add-token', {
-      access_token: adqAccessToken.value.trim(),
-      refresh_token: adqRefreshToken.value.trim(),
-    })
+    const res = await request.post('/adq/exchange-token', { authorization_code: adqAuthCode.value.trim() })
     message.success(res?.msg || res?.data?.msg || '添加成功')
-    adqAccessToken.value = ''
-    adqRefreshToken.value = ''
-    adqDiscovered.value = []
+    adqAuthCode.value = ''
     loadAdqAccounts()
   } catch (e) { message.error('添加失败: ' + (e.response?.data?.msg || e.message)) }
   adqExchanging.value = false
-}
-
-async function doAdqExchangeManual() {
-  if (!adqAccountId.value.trim()) return message.warning('请输入账户ID')
-  if (!adqAccessToken.value.trim()) return message.warning('请输入access_token')
-  adqExchanging.value = true
-  try {
-    const res = await request.post('/adq/add-token', {
-      account_id: adqAccountId.value.trim(),
-      access_token: adqAccessToken.value.trim(),
-      refresh_token: adqRefreshToken.value.trim(),
-    })
-    message.success(res?.msg || res?.data?.msg || '添加成功')
-    adqAccountId.value = ''
-    loadAdqAccounts()
-  } catch (e) { message.error('添加失败: ' + (e.response?.data?.msg || e.message)) }
-  adqExchanging.value = false
-}
-
-const bindTokenVisible = ref(false)
-const bindTokenAcct = ref({})
-const bindTokenVal = ref('')
-const bindRefreshVal = ref('')
-const bindTokenLoading = ref(false)
-
-function bindTokenFor(acc) {
-  bindTokenAcct.value = acc
-  bindTokenVal.value = ''
-  bindRefreshVal.value = ''
-  bindTokenVisible.value = true
-}
-
-async function doBindToken() {
-  if (!bindTokenVal.value.trim()) return message.warning('请输入access_token')
-  bindTokenLoading.value = true
-  try {
-    const res = await request.post('/adq/add-token', {
-      account_id: bindTokenAcct.value.account_id,
-      access_token: bindTokenVal.value.trim(),
-      refresh_token: bindRefreshVal.value.trim(),
-    })
-    message.success('绑定成功')
-    bindTokenVisible.value = false
-    loadAdqAccounts()
-  } catch (e) { message.error('绑定失败: ' + (e.response?.data?.msg || e.message)) }
-  bindTokenLoading.value = false
 }
 
 async function loadAdqAccounts() {
   try {
     const res = await request.get('/adq/accounts')
-    const accounts = res?.data || res || []
-    adqConfig.value = { accounts }
-    // 检查是否有已保存的token（显示保存状态）
-    const withToken = accounts.filter(a => a.token_expires_at)
-    if (withToken.length > 0) {
-      adqTokenSaved.value = true
-      adqTokenExpire.value = withToken[0].token_expires_at?.substring(0, 16) || ''
-    } else {
-      adqTokenSaved.value = false
-    }
+    adqConfig.value = { accounts: res?.data || res || [] }
   } catch (e) {}
 }
 

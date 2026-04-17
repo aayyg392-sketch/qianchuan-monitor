@@ -1,4 +1,5 @@
 const router = require('express').Router();
+const oplog = require('../middleware/oplog');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const db = require('../db');
@@ -21,6 +22,7 @@ router.post('/login', async (req, res) => {
       { expiresIn: process.env.JWT_EXPIRES_IN || '24h' }
     );
     logger.info(`用户登录: ${username}`);
+    oplog.log(user.id, 'login', username, '用户登录', req.headers['x-forwarded-for'] || req.ip);
     res.json({ code: 0, msg: 'ok', data: { token, user: { id: user.id, username: user.username, nickname: user.nickname, role: user.role, email: user.email } } });
   } catch (e) {
     logger.error('登录失败', { error: e.message });

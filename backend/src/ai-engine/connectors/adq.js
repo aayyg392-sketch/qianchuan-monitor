@@ -11,6 +11,7 @@ const PIDController = require('../pid-controller');
 const FatigueDetector = require('../fatigue-detector');
 const AnomalyDetector = require('../anomaly-detector');
 const BudgetPacer = require('../budget-pacer');
+const autoPlanner = require('../auto-planner');
 const dayjs = require('dayjs');
 
 const pidControllers = {};
@@ -47,10 +48,11 @@ async function runForAccount(accountDbId) {
   const config = aiRule ? (typeof aiRule.rule_config === 'string' ? JSON.parse(aiRule.rule_config) : aiRule.rule_config) : {};
   const targetCPA = config.targetCPA || 50;       // 目标转化成本（元）
   const targetROI = config.targetROI || 2.0;       // 目标ROI
-  const enableBid = config.enableBid !== false;
-  const enableCreative = config.enableCreative !== false;
-  const enableBudget = config.enableBudget !== false;
-  const enableAlert = config.enableAlert !== false;
+  const enableBid = (config.enableBidAdjust ?? config.enableBid) !== false;
+  const enableCreative = (config.enableMaterialRotate ?? config.enableCreative) !== false;
+  const enableBudget = (config.enableBudgetPace ?? config.enableBudget) !== false;
+  const enableAlert = (config.enableAnomalyAlert ?? config.enableAlert) !== false;
+  const enableAutoCreate = config.enableAutoCreate !== false;
 
   const results = { bidAdjusts: 0, anomalies: 0, fatigueAlerts: 0, budgetAlerts: 0, totalAds: 0, actions: [] };
 
@@ -197,8 +199,8 @@ async function runForAccount(accountDbId) {
       continue;
     }
 
-    // ---- 7d. PID出价调整 ----
-    if (enableBid && todayCost >= 30 && bidAmount > 0 && todayBidCount < maxBids) {
+    // ---- 7d. 出价调整 ----
+    if (enableBid && bidAmount > 0 && todayBidCount < maxBids) {
       // 冷启动期限制调整频率
       if (inLearning) {
         const [[learningAdj]] = await db.query(
@@ -220,27 +222,30 @@ async function runForAccount(accountDbId) {
       let newBid = bidAmount;
       let adjustReason = '';
 
-      if (todayConv > 0 && todayCPA < targetCPA * 0.8) {
-        // ROI很好 → 可以适当提价抢量
-        const range = ADQ_RULES.bidding.ocpm.stable;
-        const ratio = Math.min(range.max, (1 - todayCPA / targetCPA) * 0.2);
-        newBid = Math.round(bidAmount * (1 + ratio));
-        adjustReason = `CPA ¥${todayCPA.toFixed(0)} 远低于目标 ¥${targetCPA}，提价抢量`;
-      } else if (todayCPA > targetCPA * ADQ_RULES.bidding.costAlertThreshold) {
-        // 成本偏高 → 降价（但不根据小时成本做决策，需要看趋势）
-        const histCPA = history.filter(h => h.conversions > 0).map(h => h.cost / h.conversions);
-        const avgHistCPA = histCPA.length ? histCPA.reduce((a, b) => a + b, 0) / histCPA.length : 0;
-        if (avgHistCPA > 0 && todayCPA > avgHistCPA * 1.3) {
-          // 连续偏高趋势才调整
-          const ratio = Math.min(ADQ_RULES.bidding.ocpm.stable.max, (todayCPA / targetCPA - 1) * 0.15);
-          newBid = Math.max(ADQ_RULES.bidding.minBidCents, Math.round(bidAmount * (1 - ratio)));
-          adjustReason = `CPA ¥${todayCPA.toFixed(0)} 超过目标且历史趋势偏高，降价控成本`;
-        }
-      } else if (todayImpressions < 100 && daysActive >= 1) {
-        // 无量 → 提价
+      // 场景1: 无量（曝光<100） → 提价起量（不需要消耗门槛）
+      if (todayImpressions < 100 && daysActive >= 1) {
         const range = ADQ_RULES.bidding.ocpm.noImpression4h;
         newBid = Math.round(bidAmount * (1 + range.min));
         adjustReason = `曝光仅${todayImpressions}，提价起量`;
+      }
+      // 场景2: 有一定消耗后的精细调价（需要>=10元数据支撑）
+      else if (todayCost >= 10) {
+        if (todayConv > 0 && todayCPA < targetCPA * 0.8) {
+          // ROI很好 → 可以适当提价抢量
+          const range = ADQ_RULES.bidding.ocpm.stable;
+          const ratio = Math.min(range.max, (1 - todayCPA / targetCPA) * 0.2);
+          newBid = Math.round(bidAmount * (1 + ratio));
+          adjustReason = `CPA ¥${todayCPA.toFixed(0)} 远低于目标 ¥${targetCPA}，提价抢量`;
+        } else if (todayCPA > targetCPA * ADQ_RULES.bidding.costAlertThreshold) {
+          // 成本偏高 → 降价（需要看趋势）
+          const histCPA = history.filter(h => h.conversions > 0).map(h => h.cost / h.conversions);
+          const avgHistCPA = histCPA.length ? histCPA.reduce((a, b) => a + b, 0) / histCPA.length : 0;
+          if (avgHistCPA > 0 && todayCPA > avgHistCPA * 1.3) {
+            const ratio = Math.min(ADQ_RULES.bidding.ocpm.stable.max, (todayCPA / targetCPA - 1) * 0.15);
+            newBid = Math.max(ADQ_RULES.bidding.minBidCents, Math.round(bidAmount * (1 - ratio)));
+            adjustReason = `CPA ¥${todayCPA.toFixed(0)} 超过目标且历史趋势偏高，降价控成本`;
+          }
+        }
       }
 
       if (newBid !== bidAmount) {
@@ -320,7 +325,23 @@ async function runForAccount(accountDbId) {
     }
   }
 
-  // 9. 记录快照
+  // 9. 自动搭建计划（扫描优质素材 → 添加到优质广告组）
+  if (enableAutoCreate) {
+    try {
+      const autoResult = await autoPlanner.run({
+        accountDbId, account, token, adAccountId, activeAdgroups, config,
+      });
+      results.autoCreated = autoResult.created;
+      results.actions.push(...autoResult.actions.map(a => `🔧 ${a}`));
+      if (autoResult.created > 0) {
+        logger.info(`[AI-ADQ] ${account.account_name} 自动搭建: 创建${autoResult.created} 跳过${autoResult.skipped} 失败${autoResult.failed}`);
+      }
+    } catch (e) {
+      logger.warn(`[AI-ADQ] 自动搭建失败`, { error: e.message });
+    }
+  }
+
+  // 10. 记录快照
   const totalCost = todayReport.reduce((s, r) => s + +r.cost / 100, 0);
   const totalConvAll = todayReport.reduce((s, r) => s + +r.conversions_count, 0);
   await db.query(
@@ -329,7 +350,7 @@ async function runForAccount(accountDbId) {
       cost: +totalCost.toFixed(2), conversions: totalConvAll,
       cpa: totalConvAll > 0 ? +(totalCost / totalConvAll).toFixed(2) : 0,
       adCount: adgroups.length, activeAds: activeAdgroups.length,
-      bidAdjusts: results.bidAdjusts, anomalies: results.anomalies, fatigueAlerts: results.fatigueAlerts,
+      bidAdjusts: results.bidAdjusts, anomalies: results.anomalies, fatigueAlerts: results.fatigueAlerts, autoCreated: results.autoCreated || 0,
     })]
   );
 

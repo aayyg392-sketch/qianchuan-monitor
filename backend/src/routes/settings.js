@@ -215,5 +215,81 @@ router.post("/ks-ad", auth(), async (req, res) => {
   } catch (e) { res.json({ code: 500, msg: e.message }); }
 });
 
+
+// ============ TikTok配置 ============
+router.get("/tiktok", auth(), async (req, res) => {
+  try {
+    const [settings] = await db.query("SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN ('tiktok_app_id','tiktok_app_secret')");
+    const config = {};
+    settings.forEach(r => { config[r.setting_key] = r.setting_value; });
+    let accounts = [];
+    try { const [rows] = await db.query("SELECT advertiser_id, advertiser_name AS account_name, status, token_expires_at FROM tt_accounts WHERE status=1 ORDER BY id"); accounts = rows; } catch(e) {}
+    res.json({ code: 0, data: { config, accounts } });
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
+router.post("/tiktok", auth(), async (req, res) => {
+  try {
+    const { tiktok_app_id, tiktok_app_secret } = req.body;
+    if (tiktok_app_id) {
+      await db.query("INSERT INTO system_settings (setting_key,setting_value,description) VALUES ('tiktok_app_id',?,'TikTok APP ID') ON DUPLICATE KEY UPDATE setting_value=?", [tiktok_app_id, tiktok_app_id]);
+    }
+    if (tiktok_app_secret) {
+      await db.query("INSERT INTO system_settings (setting_key,setting_value,description) VALUES ('tiktok_app_secret',?,'TikTok APP Secret') ON DUPLICATE KEY UPDATE setting_value=?", [tiktok_app_secret, tiktok_app_secret]);
+    }
+    res.json({ code: 0, msg: "TikTok配置已保存" });
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
+// ============ 抖音小店配置 ============
+router.get("/douyin-shop", auth(), async (req, res) => {
+  try {
+    const [settings] = await db.query("SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN ('douyin_shop_app_key','douyin_shop_app_secret')");
+    const config = {};
+    settings.forEach(r => { config[r.setting_key] = r.setting_value; });
+    let accounts = [];
+    try { const [rows] = await db.query("SELECT shop_id, shop_name, status, token_expires_at FROM douyin_shops WHERE status=1 ORDER BY id"); accounts = rows; } catch(e) {}
+    res.json({ code: 0, data: { config, accounts } });
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
+router.post("/douyin-shop", auth(), async (req, res) => {
+  try {
+    const { douyin_shop_app_key, douyin_shop_app_secret } = req.body;
+    if (douyin_shop_app_key) {
+      await db.query("INSERT INTO system_settings (setting_key,setting_value,description) VALUES ('douyin_shop_app_key',?,'抖音小店 APP Key') ON DUPLICATE KEY UPDATE setting_value=?", [douyin_shop_app_key, douyin_shop_app_key]);
+    }
+    if (douyin_shop_app_secret) {
+      await db.query("INSERT INTO system_settings (setting_key,setting_value,description) VALUES ('douyin_shop_app_secret',?,'抖音小店 APP Secret') ON DUPLICATE KEY UPDATE setting_value=?", [douyin_shop_app_secret, douyin_shop_app_secret]);
+    }
+    res.json({ code: 0, msg: "抖音小店配置已保存" });
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
+// ============ 腾讯ADQ配置 ============
+router.get("/tencent-adq", auth(), async (req, res) => {
+  try {
+    const [settings] = await db.query("SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN ('adq_app_id','adq_app_secret')");
+    const config = {};
+    settings.forEach(r => { config[r.setting_key] = r.setting_value; });
+    let accounts = [];
+    try { const [rows] = await db.query("SELECT account_id, account_name, status, token_expires_at FROM adq_accounts WHERE status=1 ORDER BY id"); accounts = rows; } catch(e) {}
+    res.json({ code: 0, data: { config, accounts } });
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
+router.post("/tencent-adq", auth(), async (req, res) => {
+  try {
+    const { adq_app_id, adq_app_secret } = req.body;
+    if (adq_app_id) {
+      await db.query("INSERT INTO system_settings (setting_key,setting_value,description) VALUES ('adq_app_id',?,'腾讯ADQ APP ID') ON DUPLICATE KEY UPDATE setting_value=?", [adq_app_id, adq_app_id]);
+    }
+    if (adq_app_secret) {
+      await db.query("INSERT INTO system_settings (setting_key,setting_value,description) VALUES ('adq_app_secret',?,'腾讯ADQ APP Secret') ON DUPLICATE KEY UPDATE setting_value=?", [adq_app_secret, adq_app_secret]);
+    }
+    res.json({ code: 0, msg: "腾讯ADQ配置已保存" });
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
 module.exports = router;
 

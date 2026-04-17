@@ -132,6 +132,19 @@ router.use(auth(), async (req, res, next) => {
 });
 
 /**
+ * GET /api/ks-ad-dash/shops
+ * 返回快手磁力关联店铺列表
+ */
+router.get("/shops", auth(), async (req, res) => {
+  try {
+    const [rows] = await db.query("SELECT DISTINCT shop_id, shop_name FROM ks_ad_accounts WHERE status = 1 AND shop_id IS NOT NULL AND shop_id != ''");
+    res.json({ code: 0, data: rows });
+  } catch (e) {
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+/**
  * GET /api/ks-ad-dash/overview
  */
 router.get('/overview', async (req, res) => {

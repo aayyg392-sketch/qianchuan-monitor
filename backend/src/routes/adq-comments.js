@@ -107,6 +107,78 @@ router.post('/featured', auth(), async (req, res) => {
   }
 });
 
+/**
+ * GET /api/adq-comments/recent — 拉取AI接管账户的最新评论（大屏用）
+ */
+router.get('/recent', auth(), async (req, res) => {
+  try {
+    // 找出所有AI接管的账户
+    const [rules] = await db.query(
+      "SELECT rule_config FROM ai_rules WHERE rule_type='ai_takeover' AND is_active=1"
+    );
+    if (!rules.length) return res.json({ code: 0, data: [] });
+
+    const accountDbIds = new Set();
+    for (const r of rules) {
+      try {
+        const cfg = typeof r.rule_config === 'string' ? JSON.parse(r.rule_config) : r.rule_config;
+        if (cfg.accountDbId) accountDbIds.add(cfg.accountDbId);
+      } catch {}
+    }
+    if (!accountDbIds.size) return res.json({ code: 0, data: [] });
+
+    const allComments = [];
+    for (const dbId of accountDbIds) {
+      try {
+        const [accs] = await db.query('SELECT * FROM adq_accounts WHERE id = ? AND status = 1', [dbId]);
+        if (!accs.length) continue;
+        const token = await adq.getValidToken(dbId);
+
+        // 先拉广告动态列表
+        const objRes = await adq.adqApiCall(token, 'finder_ad_object_list/get', 'GET', {
+          account_id: accs[0].account_id,
+          page: 1,
+          page_size: 10,
+        }, accs[0].account_id);
+
+        const objects = objRes?.list || objRes?.data?.list || [];
+        if (!objects.length) continue;
+
+        // 每个动态拉最新评论
+        for (const obj of objects.slice(0, 5)) {
+          try {
+            const cmtRes = await adq.getComments(token, accs[0].account_id, {
+              finder_ad_object_id: obj.finder_ad_object_id,
+              page: 1,
+              page_size: 10,
+            });
+            const cmts = cmtRes?.list || cmtRes?.data?.list || [];
+            cmts.forEach(c => {
+              allComments.push({
+                nick: c.nick_name || c.author_name || '用户',
+                content: c.content || '',
+                time: c.created_time || 0,
+                reply: c.author_replys?.length ? c.author_replys[0].content : '',
+                account_id: accs[0].account_id,
+                comment_id: c.comment_id,
+              });
+            });
+          } catch {}
+        }
+      } catch (e) {
+        logger.warn('拉取账户评论失败', { dbId, error: e.message });
+      }
+    }
+
+    // 按时间倒序
+    allComments.sort((a, b) => b.time - a.time);
+    res.json({ code: 0, data: allComments.slice(0, 30) });
+  } catch (e) {
+    logger.error('拉取最新评论失败', { error: e.message });
+    res.json({ code: -1, msg: e.message });
+  }
+});
+
 // ============ 自动回复规则管理 ============
 
 /**

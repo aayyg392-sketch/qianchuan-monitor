@@ -54,6 +54,12 @@ router.post('/create', auth(), async (req, res) => {
       [platform, rule_name, rule_type, JSON.stringify(rule_config)]
     );
 
+    // 创建接管规则后自动启动调度器
+    if (rule_type === 'ai_takeover') {
+      const aiEngine = require('../index');
+      if (aiEngine.ensureSchedulerRunning) aiEngine.ensureSchedulerRunning();
+    }
+
     res.json({ code: 0, msg: '规则创建成功' });
   } catch (e) {
     logger.error('创建AI规则失败', { error: e.message });

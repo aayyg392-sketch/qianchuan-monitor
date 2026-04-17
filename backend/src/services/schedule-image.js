@@ -1,5 +1,6 @@
 /**
  * 排班表图片生成 — Puppeteer截图
+ * 支持按抖音号(roomId)过滤，不同抖音号推送到各自钉钉群
  */
 const puppeteer = require('puppeteer-core');
 const path = require('path');
@@ -12,22 +13,41 @@ const CHROMIUM_PATH = '/usr/bin/chromium-browser';
 const STATIC_DIR = '/home/www/qianchuan-monitor/frontend/dist/report-images';
 const IMG_BASE_URL = 'https://business.snefe.com/report-images';
 
-async function generateScheduleImage(dateStr) {
+/**
+ * 生成排班图片
+ * @param {string} dateStr - 日期 YYYY-MM-DD
+ * @param {number|null} roomId - 抖音号ID（live_rooms.id），null 则不过滤
+ */
+async function generateScheduleImage(dateStr, roomId) {
   const date = dateStr || dayjs().format('YYYY-MM-DD');
   const displayDate = dayjs(date).format('YYYY/M/D');
   const weekDay = ['日','一','二','三','四','五','六'][dayjs(date).day()];
 
-  // 查当天排班
-  const [schedules] = await db.query(`
-    SELECT s.anchor_id, a.name, s.start_time, s.end_time
+  // 查当天排班，支持按抖音号过滤
+  let sql = `
+    SELECT s.anchor_id, a.name, s.start_time, s.end_time, a.douyin_account_id
     FROM live_anchor_schedules s
     JOIN live_anchors a ON a.id = s.anchor_id
-    WHERE s.schedule_date = ? AND s.status != 'cancelled'
-    ORDER BY s.start_time ASC`, [date]);
+    WHERE s.schedule_date = ? AND s.status != 'cancelled'`;
+  const params = [date];
+  if (roomId) {
+    sql += ' AND a.douyin_account_id = ?';
+    params.push(roomId);
+  }
+  sql += ' ORDER BY s.start_time ASC';
+
+  const [schedules] = await db.query(sql, params);
 
   if (!schedules.length) {
-    logger.info('[ScheduleImage] 当天无排班数据');
+    logger.info(`[ScheduleImage] 当天无排班数据${roomId ? ` (抖音号${roomId})` : ''}`);
     return null;
+  }
+
+  // 获取抖音号名称（用于图片标题）
+  let shopTitle = '雪玲妃官方旗舰店';
+  if (roomId) {
+    const [[room]] = await db.query('SELECT nickname FROM live_rooms WHERE id = ?', [roomId]);
+    if (room?.nickname) shopTitle = room.nickname;
   }
 
   // 检测双搭时段（同一时间有多个主播）
@@ -67,11 +87,10 @@ async function generateScheduleImage(dateStr) {
     // 默认职责：12:00-14:00、18:00-21:00 时段的主播负责倒垃圾、倒水
     let duty = '-';
     const startMin = toMin(start), endMin = toMin(end) || 1440;
-    const inLunch = startMin < 840 && endMin > 720;   // 与12:00-14:00有交集
-    const inDinner = startMin < 1260 && endMin > 1080; // 与18:00-21:00有交集
+    const inLunch = startMin < 840 && endMin > 720;
+    const inDinner = startMin < 1260 && endMin > 1080;
     if (inLunch || inDinner) duty = '倒垃圾，倒水';
 
-    // 双搭+倒垃圾倒水同时显示
     let overlapText = '-';
     if (overlap && duty !== '-') {
       overlapText = `${overlap}，倒垃圾，倒水`;
@@ -90,8 +109,14 @@ async function generateScheduleImage(dateStr) {
     };
   });
 
-  // 休息主播（查数据库所有主播，排除今天有排班的）
-  const [allAnchors] = await db.query('SELECT name FROM live_anchors WHERE status != "resigned"');
+  // 休息主播（同抖音号下的主播，排除今天有排班的）
+  let restSql = 'SELECT name FROM live_anchors WHERE status != "resigned"';
+  const restParams = [];
+  if (roomId) {
+    restSql += ' AND douyin_account_id = ?';
+    restParams.push(roomId);
+  }
+  const [allAnchors] = await db.query(restSql, restParams);
   const scheduledNames = new Set(schedules.map(s => s.name));
   const restAnchors = allAnchors.filter(a => !scheduledNames.has(a.name)).map(a => a.name);
 
@@ -126,7 +151,7 @@ tr.rest-names td{color:#D4380D;font-weight:600;font-size:11px;text-align:center;
 .ft{text-align:right;font-size:7px;color:#CCC;margin-top:3px}
 </style></head><body>
 <div class="hd">
-  <div><h2>雪玲妃官方旗舰店（百合洗面奶）</h2><div class="sub">直播排班表</div></div>
+  <div><h2>${shopTitle}</h2><div class="sub">直播排班表</div></div>
   <div><div class="dt">${displayDate}</div><div class="wk">周${weekDay}</div></div>
 </div>
 <table>
@@ -143,7 +168,8 @@ ${restHtml}
 <div class="ft">business.snefe.com</div>
 </body></html>`;
 
-  const imgPath = path.join(STATIC_DIR, `schedule-${date}-${Date.now()}.png`);
+  const suffix = roomId ? `-room${roomId}` : '';
+  const imgPath = path.join(STATIC_DIR, `schedule-${date}${suffix}-${Date.now()}.png`);
   if (!fs.existsSync(STATIC_DIR)) fs.mkdirSync(STATIC_DIR, { recursive: true });
 
   let browser;
@@ -157,7 +183,7 @@ ${restHtml}
     await page.setViewport({ width: Math.ceil(box.width)+16, height: Math.ceil(box.height)+8, deviceScaleFactor: 3 });
     await page.screenshot({ path: imgPath, fullPage: true, type: 'png' });
     await el.dispose();
-    logger.info(`[ScheduleImage] 排班图片生成: ${imgPath}`);
+    logger.info(`[ScheduleImage] 排班图片生成: ${imgPath}${roomId ? ` (抖音号${roomId})` : ''}`);
   } finally { if (browser) await browser.close(); }
 
   return imgPath;
@@ -165,10 +191,12 @@ ${restHtml}
 
 /**
  * 发送排班图片到钉钉群Webhook
+ * @param {string} dateStr - 日期
+ * @param {number|null} roomId - 指定抖音号ID则只推送该号的排班到其webhook
  */
-async function sendScheduleImageToGroup(dateStr) {
+async function sendScheduleImageToGroup(dateStr, roomId) {
   try {
-    const imgPath = await generateScheduleImage(dateStr);
+    const imgPath = await generateScheduleImage(dateStr, roomId || null);
     if (!imgPath) return;
 
     const date = dateStr || dayjs().format('YYYY-MM-DD');
@@ -176,29 +204,43 @@ async function sendScheduleImageToGroup(dateStr) {
     const imgUrl = `${IMG_BASE_URL}/${fileName}`;
     const displayDate = dayjs(date).format('M月D日');
 
-    // 读取推送配置
-    const [cfgRows] = await db.query('SELECT config FROM push_configs WHERE id=1').catch(() => [[]]);
+    const { sendWebhookMessage } = require('./dingtalk');
     let webhooks = [];
-    if (cfgRows.length && cfgRows[0]?.config) {
-      const cfg = typeof cfgRows[0].config === 'string' ? JSON.parse(cfgRows[0].config) : cfgRows[0].config;
-      // 排班通知专用webhook
-      if (cfg.scheduleNotify?.sendToGroup && cfg.scheduleNotify?.webhookUrl) {
-        webhooks.push({ name: '排班群', url: cfg.scheduleNotify.webhookUrl });
+
+    if (roomId) {
+      // 指定了抖音号：使用该抖音号自己的webhook
+      const [[room]] = await db.query('SELECT nickname, dingtalk_webhook FROM live_rooms WHERE id = ?', [roomId]);
+      if (room?.dingtalk_webhook) {
+        webhooks.push({ name: room.nickname || `抖音号${roomId}`, url: room.dingtalk_webhook });
+      } else {
+        logger.warn(`[ScheduleImage] 抖音号${roomId}(${room?.nickname})未配置webhook，跳过群推送`);
+        return;
       }
-      // 如果没有专用的，使用报表群的webhook
-      if (!webhooks.length && cfg.liveReport?.webhooks) {
-        webhooks = cfg.liveReport.webhooks.filter(w => w.enabled && w.url);
+    } else {
+      // 未指定抖音号：使用全局推送配置
+      const [cfgRows] = await db.query('SELECT config FROM push_configs WHERE id=1').catch(() => [[]]);
+      if (cfgRows.length && cfgRows[0]?.config) {
+        const cfg = typeof cfgRows[0].config === 'string' ? JSON.parse(cfgRows[0].config) : cfgRows[0].config;
+        if (cfg.scheduleNotify?.webhooks) {
+          webhooks = cfg.scheduleNotify.webhooks.filter(w => w.enabled && w.url);
+        }
+        if (!webhooks.length && cfg.scheduleNotify?.webhookUrl) {
+          webhooks.push({ name: '排班群', url: cfg.scheduleNotify.webhookUrl });
+        }
+        if (!webhooks.length && cfg.liveReport?.webhooks) {
+          webhooks = cfg.liveReport.webhooks.filter(w => w.enabled && w.url);
+        }
       }
     }
 
     if (!webhooks.length) {
-      // 兜底：使用默认群
-      webhooks = [{ name: '默认群', url: 'https://oapi.dingtalk.com/robot/send?access_token=a5a3943bb6dbfee17663b47594453db8e7037aca6b65808330548e22533b6013' }];
+      logger.warn('[ScheduleImage] 无可用webhook，跳过群推送');
+      return;
     }
 
-    const { sendWebhookMessage } = require('./dingtalk');
-    const title = `📋 排班表 ${displayDate}`;
-    const text = `## 📋 直播排班表 ${displayDate}\n\n![排班](${imgUrl})`;
+    const roomLabel = roomId ? ` (${webhooks[0]?.name || ''})` : '';
+    const title = `📋 排班表 ${displayDate}${roomLabel}`;
+    const text = `## 📋 直播排班表 ${displayDate}${roomLabel}\n\n![排班](${imgUrl})`;
 
     for (const wh of webhooks) {
       try {

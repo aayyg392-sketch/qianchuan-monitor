@@ -23,7 +23,7 @@ router.get('/overview-all', async (req, res) => {
     const ph = shopIds.map(() => '?').join(',');
 
     // 并行查询：今日、昨日、本月、待办
-    const [todayRows, yestRows, monthRows, pendingShipRows, pendingRefundRows] = await Promise.all([
+    const [todayRows, yestRows, monthRows, pendingShipRows, pendingRefundRows, channelTodayRows, channelYestRows, adCostTodayRows, adCostYestRows] = await Promise.all([
       db.query(`
         SELECT shop_id,
           SUM(CASE WHEN pay_time IS NOT NULL THEN 1 ELSE 0 END) AS orders,
@@ -61,7 +61,41 @@ router.get('/overview-all', async (req, res) => {
         SELECT shop_id, COUNT(*) AS cnt
         FROM ks_orders WHERE shop_id IN (${ph}) AND refund_status > 0 AND finish_time IS NULL
         GROUP BY shop_id
-      `, shopIds).then(r => r[0])
+      `, shopIds).then(r => r[0]),
+
+      // 渠道分布-今日
+      db.query(`
+        SELECT shop_id, COALESCE(order_channel,'') AS ch,
+          SUM(CASE WHEN pay_time IS NOT NULL THEN 1 ELSE 0 END) AS orders,
+          COALESCE(SUM(CASE WHEN pay_time IS NOT NULL THEN pay_amount ELSE 0 END), 0) AS gmv
+        FROM ks_orders WHERE shop_id IN (${ph}) AND DATE(create_time) = CURDATE()
+        GROUP BY shop_id, order_channel
+      `, shopIds).then(r => r[0]),
+
+      // 渠道分布-昨日
+      db.query(`
+        SELECT shop_id, COALESCE(order_channel,'') AS ch,
+          SUM(CASE WHEN pay_time IS NOT NULL THEN 1 ELSE 0 END) AS orders,
+          COALESCE(SUM(CASE WHEN pay_time IS NOT NULL THEN pay_amount ELSE 0 END), 0) AS gmv
+        FROM ks_orders WHERE shop_id IN (${ph}) AND DATE(create_time) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+        GROUP BY shop_id, order_channel
+      `, shopIds).then(r => r[0]),
+
+      // 磁力消耗-今日
+      db.query(`
+        SELECT a.shop_id, SUM(r.cost) AS cost
+        FROM ks_ad_daily_report r JOIN ks_ad_accounts a ON r.advertiser_id = a.advertiser_id
+        WHERE r.report_date = CURDATE()
+        GROUP BY a.shop_id
+      `).then(r => r[0]),
+
+      // 磁力消耗-昨日
+      db.query(`
+        SELECT a.shop_id, SUM(r.cost) AS cost
+        FROM ks_ad_daily_report r JOIN ks_ad_accounts a ON r.advertiser_id = a.advertiser_id
+        WHERE r.report_date = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+        GROUP BY a.shop_id
+      `).then(r => r[0])
     ]);
 
     const toMap = rows => Object.fromEntries(rows.map(r => [r.shop_id, r]));
@@ -72,9 +106,26 @@ router.get('/overview-all', async (req, res) => {
     const refundMap = toMap(pendingRefundRows);
     const syncMap = Object.fromEntries(accounts.map(a => [a.shop_id, a.last_sync_at]));
 
+    // 渠道数据 map: { shop_id: { shortVideo: {gmv,orders}, live: {...}, itemCard: {...} } }
+    const buildChannelMap = (rows) => {
+      const m = {};
+      for (const r of rows) {
+        if (!m[r.shop_id]) m[r.shop_id] = {};
+        const ch = r.ch || 'other';
+        m[r.shop_id][ch] = { gmv: parseFloat(r.gmv) || 0, orders: parseInt(r.orders) || 0 };
+      }
+      return m;
+    };
+    const chTodayMap = buildChannelMap(channelTodayRows);
+    const chYestMap = buildChannelMap(channelYestRows);
+    const adTodayMap = Object.fromEntries((adCostTodayRows || []).map(r => [r.shop_id, parseFloat(r.cost) || 0]));
+    const adYestMap = Object.fromEntries((adCostYestRows || []).map(r => [r.shop_id, parseFloat(r.cost) || 0]));
+
     let totalToday = { gmv: 0, orders: 0, refund_amt: 0 };
     let totalYest = { gmv: 0, orders: 0, refund_amt: 0 };
     let totalMonth = 0;
+    let totalChToday = {}, totalChYest = {};
+    let totalAdToday = 0, totalAdYest = 0;
 
     const shops = accounts.map(acc => {
       const t = todayMap[acc.shop_id] || { gmv: 0, orders: 0, refund_amt: 0 };
@@ -96,17 +147,35 @@ router.get('/overview-all', async (req, res) => {
       totalYest.gmv += yGmv; totalYest.orders += yOrders; totalYest.refund_amt += yRefAmt;
       totalMonth += mGmv;
 
+      // 渠道 & 磁力消耗
+      const chT = chTodayMap[acc.shop_id] || {};
+      const chY = chYestMap[acc.shop_id] || {};
+      const adT = adTodayMap[acc.shop_id] || 0;
+      const adY = adYestMap[acc.shop_id] || 0;
+      for (const ch of ['shortVideo', 'live', 'itemCard', 'other']) {
+        if (!totalChToday[ch]) totalChToday[ch] = { gmv: 0, orders: 0 };
+        if (!totalChYest[ch]) totalChYest[ch] = { gmv: 0, orders: 0 };
+        totalChToday[ch].gmv += (chT[ch]?.gmv || 0);
+        totalChToday[ch].orders += (chT[ch]?.orders || 0);
+        totalChYest[ch].gmv += (chY[ch]?.gmv || 0);
+        totalChYest[ch].orders += (chY[ch]?.orders || 0);
+      }
+      totalAdToday += adT; totalAdYest += adY;
+
       return {
         shop_id: acc.shop_id,
         shop_name: acc.shop_name,
         last_sync_at: syncMap[acc.shop_id],
-        today: { gmv: tGmv, orders: tOrders, refund_amt: tRefAmt, avg: tAvg, visitors: 0, cvr: tCvr, paid_sales: 0, free_sales: 0 },
-        yesterday: { gmv: yGmv, orders: yOrders, refund_amt: yRefAmt, avg: yAvg, visitors: 0, cvr: yCvr, paid_sales: 0, free_sales: 0 },
+        today: { gmv: tGmv, orders: tOrders, refund_amt: tRefAmt, avg: tAvg, visitors: 0, cvr: tCvr, paid_sales: adT > 0 ? tGmv : 0, free_sales: 0, ad_cost: adT },
+        yesterday: { gmv: yGmv, orders: yOrders, refund_amt: yRefAmt, avg: yAvg, visitors: 0, cvr: yCvr, paid_sales: adY > 0 ? yGmv : 0, free_sales: 0, ad_cost: adY },
+        channels: chT,
+        channels_yesterday: chY,
         changes: {
           gmv: pctChange(tGmv, yGmv),
           orders: pctChange(tOrders, yOrders),
           refund_amt: pctChange(tRefAmt, yRefAmt),
-          avg: pctChange(tAvg, yAvg)
+          avg: pctChange(tAvg, yAvg),
+          ad_cost: pctChange(adT, adY)
         },
         month: { gmv: mGmv, orders: parseInt(m.orders || 0) },
         pending: {
@@ -137,13 +206,19 @@ router.get('/overview-all', async (req, res) => {
       code: 0,
       data: {
         total: {
-          today: { ...totalToday, avg: totalAvgToday },
-          yesterday: { ...totalYest, avg: totalAvgYest },
+          today: { ...totalToday, avg: totalAvgToday, paid_sales: totalAdToday > 0 ? totalToday.gmv : 0, ad_cost: totalAdToday },
+          yesterday: { ...totalYest, avg: totalAvgYest, paid_sales: totalAdYest > 0 ? totalYest.gmv : 0, ad_cost: totalAdYest },
+          channels: totalChToday,
+          channels_yesterday: totalChYest,
           changes: {
             gmv: pctChange(totalToday.gmv, totalYest.gmv),
             orders: pctChange(totalToday.orders, totalYest.orders),
             refund_amt: pctChange(totalToday.refund_amt, totalYest.refund_amt),
-            avg: pctChange(totalAvgToday, totalAvgYest)
+            avg: pctChange(totalAvgToday, totalAvgYest),
+            shortVideo_gmv: pctChange(totalChToday.shortVideo?.gmv || 0, totalChYest.shortVideo?.gmv || 0),
+            live_gmv: pctChange(totalChToday.live?.gmv || 0, totalChYest.live?.gmv || 0),
+            paid_sales: pctChange(totalAdToday > 0 ? totalToday.gmv : 0, totalAdYest > 0 ? totalYest.gmv : 0),
+            ad_cost: pctChange(totalAdToday, totalAdYest)
           },
           month: {
             target: monthlyTarget, current: totalMonth,

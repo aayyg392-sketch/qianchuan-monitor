@@ -43,6 +43,12 @@ const DINGTALK_AGENT_ID = process.env.DINGTALK_AGENT_ID;
       INDEX idx_anchor_date (anchor_id, schedule_date)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
 
+    // 兼容升级：添加 douyin_account_id 字段
+    try { await db.query('ALTER TABLE live_anchors ADD COLUMN douyin_account_id INT COMMENT "关联抖音号" AFTER dingtalk_id'); } catch (e) {}
+
+    // 兼容升级：live_rooms 加钉钉群 webhook 字段
+    try { await db.query('ALTER TABLE live_rooms ADD COLUMN dingtalk_webhook VARCHAR(512) COMMENT "钉钉群机器人webhook"'); } catch (e) {}
+
     logger.info('[Anchor] 主播相关表初始化完成');
   } catch (err) {
     logger.error('[Anchor] 建表失败:', err.message);
@@ -161,18 +167,20 @@ async function sendPreLiveReminder(anchor, schedule) {
 router.get('/anchors', auth(), async (req, res) => {
   try {
     const { status } = req.query;
-    let sql = 'SELECT * FROM live_anchors WHERE 1=1';
+    let sql = `SELECT a.*, r.nickname as douyin_name
+      FROM live_anchors a
+      LEFT JOIN live_rooms r ON a.douyin_account_id = r.id
+      WHERE 1=1`;
     const params = [];
 
     if (status) {
-      sql += ' AND status = ?';
+      sql += ' AND a.status = ?';
       params.push(status);
     } else {
-      // 默认不显示已离职主播
-      sql += ' AND status != "resigned"';
+      sql += ' AND a.status != "resigned"';
     }
 
-    sql += ' ORDER BY created_at DESC';
+    sql += ' ORDER BY a.created_at DESC';
 
     const [rows] = await db.query(sql, params);
     res.json({ code: 0, data: rows });
@@ -185,14 +193,14 @@ router.get('/anchors', auth(), async (req, res) => {
 // 2. POST /anchors - 新增主播
 router.post('/anchors', auth(), async (req, res) => {
   try {
-    const { name, nickname, phone, avatar, dingtalk_id } = req.body;
+    const { name, nickname, phone, avatar, dingtalk_id, douyin_account_id } = req.body;
     if (!name) {
       return res.status(400).json({ code: -1, message: '主播名称不能为空' });
     }
 
     const [result] = await db.query(
-      'INSERT INTO live_anchors (name, nickname, phone, avatar, dingtalk_id) VALUES (?, ?, ?, ?, ?)',
-      [name, nickname || null, phone || null, avatar || null, dingtalk_id || null]
+      'INSERT INTO live_anchors (name, nickname, phone, avatar, dingtalk_id, douyin_account_id) VALUES (?, ?, ?, ?, ?, ?)',
+      [name, nickname || null, phone || null, avatar || null, dingtalk_id || null, douyin_account_id || null]
     );
 
     res.json({ code: 0, data: { id: result.insertId }, message: '新增主播成功' });
@@ -206,7 +214,7 @@ router.post('/anchors', auth(), async (req, res) => {
 router.put('/anchors/:id', auth(), async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, nickname, phone, avatar, dingtalk_id, status } = req.body;
+    const { name, nickname, phone, avatar, dingtalk_id, douyin_account_id, status } = req.body;
 
     const fields = [];
     const params = [];
@@ -216,6 +224,7 @@ router.put('/anchors/:id', auth(), async (req, res) => {
     if (phone !== undefined) { fields.push('phone = ?'); params.push(phone); }
     if (avatar !== undefined) { fields.push('avatar = ?'); params.push(avatar); }
     if (dingtalk_id !== undefined) { fields.push('dingtalk_id = ?'); params.push(dingtalk_id); }
+    if (douyin_account_id !== undefined) { fields.push('douyin_account_id = ?'); params.push(douyin_account_id); }
     if (status !== undefined) { fields.push('status = ?'); params.push(status); }
 
     if (fields.length === 0) {
@@ -241,6 +250,64 @@ router.delete('/anchors/:id', auth(), async (req, res) => {
   } catch (err) {
     logger.error('[Anchor] 删除主播失败:', err.message);
     res.status(500).json({ code: -1, message: '删除主播失败' });
+  }
+});
+
+// 根据手机号查询钉钉userId
+router.get('/dingtalk-userid', auth(), async (req, res) => {
+  try {
+    const { phone } = req.query;
+    if (!phone) return res.json({ code: -1, msg: '请输入手机号' });
+    const { getAccessToken } = require('../services/dingtalk');
+    const token = await getAccessToken();
+    const r = await axios.post('https://oapi.dingtalk.com/topapi/v2/user/getbymobile', {
+      mobile: phone
+    }, { params: { access_token: token }, timeout: 10000 });
+    if (r.data.errcode === 0 && r.data.result?.userid) {
+      res.json({ code: 0, data: { userid: r.data.result.userid } });
+    } else {
+      res.json({ code: -1, msg: r.data.errmsg || '未找到该手机号对应的钉钉用户' });
+    }
+  } catch (e) {
+    res.json({ code: -1, msg: e.message });
+  }
+});
+
+// 获取抖音号列表（按角色过滤，来源=live_rooms）
+router.get('/douyin-accounts', auth(), async (req, res) => {
+  try {
+    // 获取用户角色关联的直播间
+    const [[userRole]] = await db.query('SELECT role_id FROM user_roles WHERE user_id = ?', [req.user.id]);
+    let rows;
+    if (userRole) {
+      const [roomIds] = await db.query('SELECT room_id FROM role_live_rooms WHERE role_id = ?', [userRole.role_id]);
+      if (roomIds.length) {
+        const ids = roomIds.map(r => r.room_id);
+        const ph = ids.map(() => '?').join(',');
+        [rows] = await db.query(`SELECT id, nickname, aweme_name, dingtalk_webhook FROM live_rooms WHERE id IN (${ph}) AND status = 'active' ORDER BY id`, ids);
+      } else {
+        [rows] = await db.query("SELECT id, nickname, aweme_name, dingtalk_webhook FROM live_rooms WHERE status = 'active' ORDER BY id");
+      }
+    } else {
+      [rows] = await db.query("SELECT id, nickname, aweme_name, dingtalk_webhook FROM live_rooms WHERE status = 'active' ORDER BY id");
+    }
+    res.json({ code: 0, data: rows.map(r => ({ id: r.id, nickname: r.nickname || r.aweme_name, dingtalk_webhook: r.dingtalk_webhook || '' })) });
+  } catch (e) {
+    res.json({ code: -1, msg: e.message });
+  }
+});
+
+// PUT /douyin-accounts/:id/webhook - 设置抖音号的钉钉群webhook
+router.put('/douyin-accounts/:id/webhook', auth(), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { webhook } = req.body;
+    await db.query('UPDATE live_rooms SET dingtalk_webhook = ? WHERE id = ?', [webhook || null, id]);
+    logger.info(`[Anchor] 抖音号${id} webhook已更新`);
+    res.json({ code: 0, message: '保存成功' });
+  } catch (e) {
+    logger.error('[Anchor] 更新webhook失败:', e.message);
+    res.status(500).json({ code: -1, message: e.message });
   }
 });
 
@@ -386,14 +453,15 @@ router.post('/schedules/:id/notify', auth(), async (req, res) => {
   }
 });
 
-// 9b. POST /schedules/notify-all - 批量发送当天排班通知（按主播合并，一天一次）
+// 9b. POST /schedules/notify-all - 批量发送当天排班通知（按主播合并，一天一次，按抖音号分组推送到各自钉钉群）
 router.post('/schedules/notify-all', auth(), async (req, res) => {
   try {
     const { date } = req.body;
     if (!date) return res.status(400).json({ code: -1, message: '需要date参数' });
 
     const [rows] = await db.query(
-      `SELECT s.*, a.name, a.dingtalk_userid, a.id as aid FROM live_anchor_schedules s
+      `SELECT s.*, a.name, a.dingtalk_userid, a.id as aid, a.douyin_account_id
+       FROM live_anchor_schedules s
        LEFT JOIN live_anchors a ON s.anchor_id = a.id
        WHERE s.schedule_date = ? AND s.status != 'cancelled' ORDER BY s.start_time`, [date]);
 
@@ -403,7 +471,7 @@ router.post('/schedules/notify-all', auth(), async (req, res) => {
       const key = sch.anchor_id;
       if (!anchorMap[key]) {
         anchorMap[key] = {
-          anchor: { name: sch.name, dingtalk_userid: sch.dingtalk_userid, id: sch.anchor_id },
+          anchor: { name: sch.name, dingtalk_userid: sch.dingtalk_userid, id: sch.anchor_id, douyin_account_id: sch.douyin_account_id },
           schedules: [],
           scheduleIds: []
         };
@@ -424,7 +492,6 @@ router.post('/schedules/notify-all', auth(), async (req, res) => {
         for (const sid of scheduleIds) {
           await db.query('UPDATE live_anchor_schedules SET notify_status = "sent" WHERE id = ?', [sid]);
         }
-        // 记录推送日志
         await db.query('INSERT INTO push_logs (push_type, push_date, receiver_id, receiver_name, status, created_at) VALUES (?,?,?,?,?,NOW())',
           ['schedule', date, anchor.dingtalk_userid, anchor.name, 'success']).catch(() => {});
         sent++;
@@ -435,14 +502,47 @@ router.post('/schedules/notify-all', auth(), async (req, res) => {
         }
       }
     }
-    // 读取推送配置，勾选了同步到群机器人才发送排班图片
+
+    // 按抖音号分组，发送排班图片到各自的钉钉群
     let groupMsg = '';
     try {
       const [cfgRows] = await db.query('SELECT config FROM push_configs WHERE id=1').catch(() => [[]]);
-      if (cfgRows.length && cfgRows[0]?.config) {
-        const cfg = typeof cfgRows[0].config === 'string' ? JSON.parse(cfgRows[0].config) : cfgRows[0].config;
-        if (cfg.scheduleNotify?.sendToGroup) {
-          const { sendScheduleImageToGroup } = require('../services/schedule-image');
+      const cfg = cfgRows.length && cfgRows[0]?.config
+        ? (typeof cfgRows[0].config === 'string' ? JSON.parse(cfgRows[0].config) : cfgRows[0].config)
+        : {};
+      if (cfg.scheduleNotify?.sendToGroup) {
+        // 查所有活跃抖音号及其 webhook
+        const [rooms] = await db.query("SELECT id, nickname, dingtalk_webhook FROM live_rooms WHERE status = 'active'");
+        // 收集所有主播的 douyin_account_id
+        const douyinIds = new Set();
+        for (const a of Object.values(anchorMap)) {
+          if (a.anchor.douyin_account_id) douyinIds.add(a.anchor.douyin_account_id);
+        }
+
+        const { generateScheduleImage, sendScheduleImageToGroup } = require('../services/schedule-image');
+        const groupResults = [];
+
+        if (douyinIds.size > 1) {
+          // 多个抖音号：按抖音号分别生成图片，推送到各自的钉钉群
+          for (const roomId of douyinIds) {
+            const room = rooms.find(r => r.id === roomId);
+            if (!room) continue;
+            const webhook = room.dingtalk_webhook;
+            if (!webhook) {
+              groupResults.push(`${room.nickname}(未配置webhook)`);
+              continue;
+            }
+            try {
+              await sendScheduleImageToGroup(date, roomId);
+              groupResults.push(`${room.nickname}✓`);
+            } catch (e) {
+              logger.error(`[Anchor] 排班图片推送到${room.nickname}群失败:`, e.message);
+              groupResults.push(`${room.nickname}✗`);
+            }
+          }
+          groupMsg = `，排班图片已按抖音号分组推送: ${groupResults.join('、')}`;
+        } else {
+          // 单个抖音号或未区分：使用全局配置推送
           await sendScheduleImageToGroup(date);
           groupMsg = '，排班图片已同步到群';
         }
@@ -814,6 +914,29 @@ router.post('/reviews/:scheduleId/notify', auth(), async (req, res) => {
   } catch (err) {
     logger.error('[Anchor] 钉钉推送失败:', err.message);
     res.status(500).json({ code: -1, message: err.message });
+  }
+});
+
+// ============ 推送店铺列表（供推送配置页使用） ============
+router.get('/push-shops', auth(), async (req, res) => {
+  try {
+    // 视频号店铺（ADQ账户）
+    let wx = [];
+    try {
+      const [rows] = await db.query("SELECT DISTINCT account_name FROM adq_accounts WHERE status = 1 AND account_name IS NOT NULL");
+      wx = rows.map(r => r.account_name);
+    } catch (e) {}
+
+    // 快手店铺
+    let ks = [];
+    try {
+      const [rows] = await db.query("SELECT shop_id as id, shop_name as name FROM ks_accounts WHERE status = 1 ORDER BY id");
+      ks = rows;
+    } catch (e) {}
+
+    res.json({ code: 0, data: { wx, ks } });
+  } catch (e) {
+    res.json({ code: 0, data: { wx: [], ks: [] } });
   }
 });
 

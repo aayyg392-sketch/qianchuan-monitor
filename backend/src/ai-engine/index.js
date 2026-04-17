@@ -15,6 +15,20 @@ router.use('/diagnosis', require('./routes/diagnosis'));
 // 引擎实例（全局单例）
 let scheduler = null;
 
+// 自动启动：有活跃的AI接管规则时自动启动调度器
+(async () => {
+  try {
+    const [rows] = await db.query("SELECT COUNT(*) as cnt FROM ai_rules WHERE rule_type='ai_takeover' AND is_active=1");
+    if (rows[0]?.cnt > 0) {
+      scheduler = new AIScheduler(db, logger);
+      await scheduler.start();
+      logger.info(`[AI引擎] 检测到${rows[0].cnt}个活跃接管规则，调度器自动启动`);
+    }
+  } catch (e) {
+    logger.warn('[AI引擎] 自动启动检查失败（表可能尚未创建）', { error: e.message });
+  }
+})();
+
 /**
  * POST /api/ai-engine/start — 启动引擎
  */
@@ -57,5 +71,17 @@ router.get('/health', (req, res) => {
     },
   });
 });
+
+// 供其他模块调用的启动函数
+router.ensureSchedulerRunning = async () => {
+  if (scheduler?.running) return;
+  try {
+    scheduler = new AIScheduler(db, logger);
+    await scheduler.start();
+    logger.info('[AI引擎] 调度器已启动');
+  } catch (e) {
+    logger.error('[AI引擎] 调度器启动失败', { error: e.message });
+  }
+};
 
 module.exports = router;

@@ -181,7 +181,10 @@
             <div class="pool-avatar" :style="{ background: getColor(anchor.id) }">
               {{ anchor.name?.charAt(0) }}
             </div>
-            <span class="pool-name">{{ anchor.name }}</span>
+            <div class="pool-info">
+              <span class="pool-name">{{ anchor.name }}</span>
+              <span class="pool-douyin" v-if="anchor.douyin_name">{{ anchor.douyin_name }}</span>
+            </div>
             <a-popconfirm title="确认删除该主播？" @confirm="deleteAnchor(anchor.id)" okText="确认" cancelText="取消">
               <button class="pool-delete" @click.stop>
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3.5 3.5L10.5 10.5M10.5 3.5L3.5 10.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
@@ -223,10 +226,19 @@
     </a-modal>
 
     <!-- 添加主播弹窗 -->
-    <a-modal v-model:open="showAddAnchor" title="添加主播" @ok="addAnchor" okText="添加" cancelText="取消" :width="isMobile ? '90%' : 400" destroyOnClose centered>
+    <a-modal v-model:open="showAddAnchor" title="添加主播" @ok="addAnchor" okText="添加" cancelText="取消" :width="isMobile ? '90%' : 440" destroyOnClose centered>
       <a-form layout="vertical" class="dd-form">
-        <a-form-item label="主播名称">
-          <a-input v-model:value="newAnchorName" placeholder="请输入主播名称" class="dd-input" />
+        <a-form-item label="主播名称" required>
+          <a-input v-model:value="newAnchorForm.name" placeholder="请输入主播名称" class="dd-input" />
+        </a-form-item>
+        <a-form-item label="所属抖音号">
+          <a-select v-model:value="newAnchorForm.douyin_account_id" placeholder="选择抖音号" allowClear class="dd-input" style="width:100%">
+            <a-select-option v-for="d in douyinAccounts" :key="d.id" :value="d.id">{{ d.nickname || d.name }}</a-select-option>
+          </a-select>
+        </a-form-item>
+        <a-form-item label="钉钉ID">
+          <a-input v-model:value="newAnchorForm.dingtalk_id" placeholder="钉钉userId" class="dd-input" />
+          <div style="margin-top:4px;font-size:12px;color:#999">打开钉钉 → 我的 → 设置 → 我的信息 → 工号/userId</div>
         </a-form-item>
       </a-form>
     </a-modal>
@@ -256,7 +268,8 @@ const colWidth = ref(120)
 const showDatePicker = ref(false)
 const showAddAnchor = ref(false)
 const notifyLoading = ref(false)
-const newAnchorName = ref('')
+const newAnchorForm = reactive({ name: '', dingtalk_id: '', douyin_account_id: null })
+const douyinAccounts = ref([])
 const scrollAreaRef = ref(null)
 const columnsHeaderRef = ref(null)
 const gridRef = ref(null)
@@ -580,19 +593,30 @@ async function sendAllNotify() {
 }
 
 async function addAnchor() {
-  if (!newAnchorName.value.trim()) {
+  if (!newAnchorForm.name.trim()) {
     message.warning('请输入主播名称')
     return
   }
   try {
-    await request.post('/anchor/anchors', { name: newAnchorName.value.trim() })
+    await request.post('/anchor/anchors', {
+      name: newAnchorForm.name.trim(),
+      dingtalk_id: newAnchorForm.dingtalk_id || undefined,
+      douyin_account_id: newAnchorForm.douyin_account_id || undefined,
+    })
     message.success('主播已添加')
-    newAnchorName.value = ''
+    Object.assign(newAnchorForm, { name: '', dingtalk_id: '', douyin_account_id: null })
     showAddAnchor.value = false
     fetchAnchors()
   } catch (e) {
     message.error('添加主播失败')
   }
+}
+
+async function fetchDouyinAccounts() {
+  try {
+    const res = await request.get('/anchor/douyin-accounts')
+    douyinAccounts.value = res.data || []
+  } catch (e) {}
 }
 
 async function deleteAnchor(id) {
@@ -907,6 +931,7 @@ function onScroll() {
 // ========== 生命周期 ==========
 onMounted(async () => {
   checkMobile()
+  fetchDouyinAccounts()
   await fetchAnchors()
   await fetchSchedules()
   updateNowLine()
@@ -1535,14 +1560,28 @@ function onResize() {
   flex-shrink: 0;
 }
 
+.pool-info {
+  flex: 1;
+  overflow: hidden;
+  min-width: 0;
+}
 .pool-name {
   font-size: 14px;
   color: #333333;
-  flex: 1;
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 500;
+}
+.pool-douyin {
+  font-size: 11px;
+  color: #999;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
 }
 
 .pool-delete {
