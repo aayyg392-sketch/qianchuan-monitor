@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
-const { auth } = require('../middleware/auth');
+const auth = require('../middleware/auth');
 
 // 消耗概览（KPI 卡片）
 router.get('/overview', auth(), async (req, res) => {

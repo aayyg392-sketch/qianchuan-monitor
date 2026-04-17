@@ -14,9 +14,10 @@
       </div>
       <div class="rm-card-desc">{{ r.description || '暂无描述' }}</div>
       <div class="rm-card-stats">
-        <span>{{ r.user_count }}人</span>
-        <span>{{ r.menu_count }}菜单</span>
-        <span>{{ r.account_count }}账户</span>
+        <span>&#x1F464; {{ r.user_count }}人</span>
+        <span>&#x1F4CB; {{ r.menu_count }}菜单</span>
+        <span>&#x1F3E2; {{ r.account_count }}账户</span>
+        <span>&#x1F4F1; {{ r.live_room_count || 0 }}抖音号</span>
       </div>
       <div class="rm-card-acts">
         <button @click="openEdit(r)">编辑权限</button>
@@ -25,6 +26,7 @@
     </div>
   </div>
 
+  <!-- 编辑弹窗 -->
   <div v-if="showModal" class="rm-mask" @click.self="showModal=false">
     <div class="rm-modal">
       <div class="rm-modal-hd">
@@ -48,6 +50,7 @@
         <div class="rm-tabs">
           <button :class="{active:tab==='menu'}" @click="tab='menu'">菜单权限</button>
           <button :class="{active:tab==='account'}" @click="tab='account'">账户权限</button>
+          <button :class="{active:tab==='liveroom'}" @click="tab='liveroom'">抖音号权限</button>
         </div>
 
         <div v-if="tab==='menu'" class="rm-perm-list">
@@ -82,6 +85,25 @@
               {{ a.advertiser_name || a.advertiser_id }}
             </label>
           </div>
+          <h4>视频号ADQ主体</h4>
+          <div class="rm-acc-list">
+            <label v-for="s in adAccounts.adq_subjects" :key="s.subject_name">
+              <input type="checkbox" :checked="isAdqSubjectChecked(s)" @change="toggleAdqSubject(s)" />
+              {{ s.subject_name }} <span style="color:#999;font-size:12px">({{ s.account_ids.length }}账户)</span>
+            </label>
+          </div>
+        </div>
+
+        <div v-if="tab==='liveroom'" class="rm-perm-list">
+          <div class="rm-check-all">
+            <label><input type="checkbox" :checked="allLiveRoomChecked" @change="toggleAllLiveRooms" /> 全选</label>
+          </div>
+          <div class="rm-acc-list">
+            <label v-for="r in liveRooms" :key="r.id">
+              <input type="checkbox" :value="r.id" v-model="form.live_room_ids" />
+              {{ r.nickname }}{{ r.advertiser_name ? ' (' + r.advertiser_name.replace(/.*-/, '') + ')' : '' }}
+            </label>
+          </div>
         </div>
       </div>
       <div class="rm-modal-ft">
@@ -99,17 +121,30 @@ import request from '../utils/request'
 
 const roles = ref([])
 const menuTree = ref([])
-const adAccounts = ref({ qianchuan: [], kuaishou: [] })
+const adAccounts = ref({ qianchuan: [], kuaishou: [], adq: [], adq_subjects: [] })
+const liveRooms = ref([])
 const showModal = ref(false)
 const isEdit = ref(false)
 const tab = ref('menu')
 const saving = ref(false)
-const form = ref({ name: '', display_name: '', description: '', menu_codes: [], account_keys: [] })
+const form = ref({ name: '', display_name: '', description: '', menu_codes: [], account_keys: [], live_room_ids: [] })
 
 const allMenuChecked = computed(() => {
   const allCodes = menuTree.value.flatMap(g => g.children ? g.children.map(c => c.code) : [g.code])
   return allCodes.length > 0 && allCodes.every(c => form.value.menu_codes.includes(c))
 })
+
+const allLiveRoomChecked = computed(() => {
+  return liveRooms.value.length > 0 && liveRooms.value.every(r => form.value.live_room_ids.includes(r.id))
+})
+
+function toggleAllLiveRooms() {
+  if (allLiveRoomChecked.value) {
+    form.value.live_room_ids = []
+  } else {
+    form.value.live_room_ids = liveRooms.value.map(r => r.id)
+  }
+}
 
 function groupChecked(g) {
   const codes = g.children ? g.children.map(c => c.code) : [g.code]
@@ -125,6 +160,20 @@ function toggleGroup(g) {
     form.value.menu_codes = [...s]
   }
 }
+function isAdqSubjectChecked(s) {
+  if (!s.account_ids?.length) return false
+  return s.account_ids.every(id => form.value.account_keys.includes('adq:' + id))
+}
+function toggleAdqSubject(s) {
+  const keys = s.account_ids.map(id => 'adq:' + id)
+  if (isAdqSubjectChecked(s)) {
+    form.value.account_keys = form.value.account_keys.filter(k => !keys.includes(k))
+  } else {
+    const set = new Set([...form.value.account_keys, ...keys])
+    form.value.account_keys = [...set]
+  }
+}
+
 function toggleAllMenus() {
   const allCodes = menuTree.value.flatMap(g => g.children ? g.children.map(c => c.code) : [g.code])
   if (allMenuChecked.value) {
@@ -135,19 +184,21 @@ function toggleAllMenus() {
 }
 
 async function loadData() {
-  const [r1, r2, r3] = await Promise.all([
+  const [r1, r2, r3, r4] = await Promise.all([
     request.get('/rbac/roles'),
     request.get('/rbac/menus'),
-    request.get('/rbac/ad-accounts')
+    request.get('/rbac/ad-accounts'),
+    request.get('/rbac/live-rooms')
   ])
   if (r1.code === 0) roles.value = r1.data
   if (r2.code === 0) menuTree.value = r2.data
   if (r3.code === 0) adAccounts.value = r3.data
+  if (r4.code === 0) liveRooms.value = r4.data
 }
 
 function openCreate() {
   isEdit.value = false
-  form.value = { name: '', display_name: '', description: '', menu_codes: [], account_keys: [] }
+  form.value = { name: '', display_name: '', description: '', menu_codes: [], account_keys: [], live_room_ids: [] }
   tab.value = 'menu'
   showModal.value = true
 }
@@ -163,7 +214,8 @@ async function openEdit(r) {
     display_name: d.display_name,
     description: d.description,
     menu_codes: d.menus || [],
-    account_keys: (d.ad_accounts || []).map(a => a.platform + ':' + a.account_id)
+    account_keys: (d.ad_accounts || []).map(a => a.platform + ':' + a.account_id),
+    live_room_ids: d.live_rooms || []
   }
   tab.value = 'menu'
   showModal.value = true
@@ -184,13 +236,15 @@ async function saveRole() {
       })
       await request.put('/rbac/roles/' + form.value.id + '/menus', { menu_codes: form.value.menu_codes })
       await request.put('/rbac/roles/' + form.value.id + '/accounts', { accounts })
+      await request.put('/rbac/roles/' + form.value.id + '/live-rooms', { room_ids: form.value.live_room_ids })
     } else {
       await request.post('/rbac/roles', {
         name: form.value.name,
         display_name: form.value.display_name,
         description: form.value.description,
         menu_codes: form.value.menu_codes,
-        ad_accounts: accounts
+        ad_accounts: accounts,
+        live_room_ids: form.value.live_room_ids
       })
     }
     showModal.value = false

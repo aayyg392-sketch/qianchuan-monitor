@@ -105,7 +105,7 @@ router.get('/oauth-url', async (req, res) => {
       return res.json({ code: -1, msg: '请先配置快手磁力 APP ID 和 APP Secret' });
     }
     const shopId = req.query.shop_id || '';
-    const scope = ['esp_ad_query', 'esp_ad_manage', 'esp_report_service', 'esp_account_service', 'esp_fund_service', 'public_dmp_service', 'public_agent_service', 'public_account_service'];
+    const scope = ['esp_ad_query', 'esp_ad_manage', 'esp_report_service', 'esp_account_service', 'esp_fund_service', 'public_dmp_service', 'public_agent_service', 'public_account_service', 'ad_comment', 'esp_ad_comment'];
     const state = 'ksad_' + (shopId || 'none') + '_' + Date.now();
     const redirectUri = 'https://business.snefe.com/api/ks-ad/oauth-callback';
     const url = `${KS_AD_AUTH_URL}?app_id=${cfg.ks_ad_app_id}&scope=${encodeURIComponent(JSON.stringify(scope))}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}&oauth_type=advertiser`;

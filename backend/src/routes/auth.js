@@ -72,6 +72,14 @@ router.get('/permissions', require('../middleware/auth')(), async (req, res) => 
 router.get('/users', require('../middleware/auth')(['admin']), async (req, res) => {
   try {
     const [rows] = await db.query('SELECT id,username,nickname,email,role,status,last_login,created_at FROM users ORDER BY id');
+    // 附加RBAC角色
+    const [urRows] = await db.query('SELECT ur.user_id, r.name FROM user_roles ur JOIN roles r ON r.id = ur.role_id');
+    const userRoleMap = {};
+    for (const ur of urRows) {
+      if (!userRoleMap[ur.user_id]) userRoleMap[ur.user_id] = [];
+      userRoleMap[ur.user_id].push(ur.name);
+    }
+    for (const u of rows) u.roles = userRoleMap[u.id] || [];
     res.json({ code: 0, data: rows });
   } catch (e) {
     res.json({ code: 500, msg: e.message });

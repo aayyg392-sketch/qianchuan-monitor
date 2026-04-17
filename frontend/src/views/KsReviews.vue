@@ -2,44 +2,57 @@
   <div class="ks-reviews">
     <div class="page-header">
       <h2 class="page-title">评价管理</h2>
-      <div class="timer-status" v-if="overview.timer_running">
-        <span class="status-dot running"></span>
-        AI定时回复运行中（每{{ overview.auto_reply_interval }}分钟）
+      <div class="header-right">
+        <a-segmented v-model:value="commentType" :options="typeOptions" @change="onTypeChange" />
+        <a-select v-model:value="shopId" style="min-width:200px" @change="onShopChange">
+          <a-select-option v-for="s in shops" :key="s.shop_id" :value="s.shop_id">{{ s.shop_name }}</a-select-option>
+        </a-select>
+        <div class="timer-status" v-if="timerRunning">
+          <span class="status-dot running"></span>
+          AI定时回复中（每{{ currentInterval }}分钟）
+        </div>
       </div>
+    </div>
+
+    <!-- 类型标识 -->
+    <div class="type-banner" :class="commentType">
+      <span class="type-icon">{{ commentType === 'review' ? '🛒' : '📹' }}</span>
+      <span class="type-text">{{ commentType === 'review' ? '快手小店 · 商品评价' : '磁力短视频 · 广告评论' }}</span>
+      <span class="type-desc">{{ commentType === 'review' ? '买家对商品的评价和打分，支持AI自动回复' : '磁力广告视频下的用户互动评论，支持AI回复和屏蔽' }}</span>
     </div>
 
     <!-- 数据概览卡片 -->
     <div class="stat-cards">
       <div class="stat-card">
-        <div class="stat-card__value">{{ overview.total }}</div>
+        <div class="stat-card__value">{{ curStats.total }}</div>
         <div class="stat-card__label">总评论数</div>
       </div>
       <div class="stat-card">
-        <div class="stat-card__value blue">{{ overview.replied }}</div>
+        <div class="stat-card__value blue">{{ curStats.replied }}</div>
         <div class="stat-card__label">已回复</div>
       </div>
       <div class="stat-card">
-        <div class="stat-card__value orange">{{ overview.pending }}</div>
+        <div class="stat-card__value orange">{{ curStats.pending }}</div>
         <div class="stat-card__label">待回复</div>
       </div>
       <div class="stat-card">
-        <div class="stat-card__value green">{{ overview.today_comments || 0 }}</div>
+        <div class="stat-card__value green">{{ curStats.today_comments || 0 }}</div>
         <div class="stat-card__label">今日新评论</div>
-        <div class="stat-card__sub" v-if="overview.yesterday_comments">昨日 {{ overview.yesterday_comments }}</div>
+        <div class="stat-card__sub" v-if="curStats.yesterday_comments">昨日 {{ curStats.yesterday_comments }}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-card__value purple">{{ overview.today_replies || 0 }}</div>
+        <div class="stat-card__value purple">{{ curStats.today_replies || 0 }}</div>
         <div class="stat-card__label">今日已回复</div>
-        <div class="stat-card__sub" v-if="overview.yesterday_replies">昨日 {{ overview.yesterday_replies }}</div>
+        <div class="stat-card__sub" v-if="curStats.yesterday_replies">昨日 {{ curStats.yesterday_replies }}</div>
       </div>
-      <div class="stat-card">
+      <div class="stat-card" v-if="commentType === 'review'">
         <div class="stat-card__value" :class="overview.avg_star >= 4 ? 'green' : 'orange'">{{ overview.avg_star }}★</div>
         <div class="stat-card__label">平均评分</div>
       </div>
     </div>
 
-    <!-- 最新评论滚动 -->
-    <div class="latest-scroll" v-if="latestComments.length">
+    <!-- 最新评论滚动（仅商品评价） -->
+    <div class="latest-scroll" v-if="commentType === 'review' && latestComments.length">
       <div class="latest-scroll__header">
         <span class="latest-scroll__title">最新评论</span>
         <span class="latest-scroll__count">{{ latestComments.length }}条</span>
@@ -62,28 +75,28 @@
     </div>
 
     <a-tabs v-model:activeKey="activeTab" class="ops-tabs">
-      <!-- Tab 1: 评价列表 -->
-      <a-tab-pane key="comments" tab="评价列表">
+      <!-- Tab 1: 评论列表 -->
+      <a-tab-pane key="comments" tab="评论列表">
         <div class="tab-content">
           <div class="tab-toolbar">
-            <a-button type="primary" :loading="pulling" @click="pullReviews">
+            <a-button type="primary" :loading="pulling" @click="pullData">
               <template #icon><CloudDownloadOutlined /></template>
-              拉取评价
+              {{ commentType === 'review' ? '拉取评价' : '同步评论' }}
             </a-button>
-            <a-button @click="fetchReviews">
+            <a-button @click="fetchList">
               <template #icon><ReloadOutlined /></template>
             </a-button>
-            <a-button :loading="batchReplying" @click="batchReply" :disabled="!overview.pending">
-              模板批量回复 ({{ overview.pending }}条)
+            <a-button v-if="commentType === 'review'" :loading="batchReplying" @click="batchReply" :disabled="!curStats.pending">
+              模板批量回复 ({{ curStats.pending }}条)
             </a-button>
-            <a-button type="primary" ghost :loading="aiBatchReplying" @click="aiBatchReply" :disabled="!overview.pending">
+            <a-button type="primary" ghost :loading="aiBatchReplying" @click="aiBatchReply" :disabled="!curStats.pending">
               <template #icon><RobotOutlined /></template>
               AI批量回复
             </a-button>
           </div>
 
-          <!-- 好评/中评/差评统计 -->
-          <div class="stat-row" v-if="overview.total > 0">
+          <!-- 好评/中评/差评统计（仅商品评价） -->
+          <div class="stat-row" v-if="commentType === 'review' && overview.total > 0">
             <div class="stat-tag-wrap">
               <span class="overview-tag positive">好评 {{ overview.positive }}</span>
               <span class="overview-tag neutral" v-if="overview.neutral">中评 {{ overview.neutral }}</span>
@@ -93,65 +106,112 @@
 
           <!-- 筛选 -->
           <div class="filter-bar">
-            <a-select v-model:value="filters.status" placeholder="回复状态" allow-clear style="min-width:110px" @change="fetchReviews">
+            <a-select v-model:value="filters.status" placeholder="回复状态" allow-clear style="min-width:110px" @change="fetchList">
               <a-select-option value="pending">待回复</a-select-option>
               <a-select-option value="replied">已回复</a-select-option>
-              <a-select-option value="failed">失败</a-select-option>
+              <a-select-option v-if="commentType === 'review'" value="failed">失败</a-select-option>
             </a-select>
-            <a-select v-model:value="filters.star" placeholder="星级" allow-clear style="min-width:90px" @change="fetchReviews">
+            <a-select v-if="commentType === 'review'" v-model:value="filters.star" placeholder="星级" allow-clear style="min-width:90px" @change="fetchList">
               <a-select-option v-for="s in 5" :key="s" :value="s">{{ s }}星</a-select-option>
             </a-select>
-            <a-input-search v-model:value="filters.keyword" placeholder="搜索评价内容/商品..." allow-clear style="flex:1;min-width:140px" @search="fetchReviews" />
+            <a-input-search v-model:value="filters.keyword" placeholder="搜索评论内容..." allow-clear style="flex:1;min-width:140px" @search="fetchList" />
           </div>
 
-          <!-- 评价卡片 -->
-          <a-spin :spinning="reviewsLoading">
-            <div v-if="reviews.length" class="comment-list">
-              <div v-for="item in reviews" :key="item.id" class="comment-card">
-                <div class="comment-card__header">
-                  <span class="comment-card__buyer">{{ item.buyer_nick || '匿名用户' }}</span>
-                  <span class="comment-card__stars" :class="'star-' + starCategory(item.quality_score || item.star)">
-                    {{ '★'.repeat(item.quality_score || item.star || 0) }}{{ '☆'.repeat(5 - (item.quality_score || item.star || 0)) }}
-                  </span>
-                  <a-tag :color="statusColorMap[item.reply_status]" size="small">{{ statusTextMap[item.reply_status] }}</a-tag>
-                  <span class="comment-card__time">{{ formatTime(item.comment_time) }}</span>
+          <!-- 评论卡片 -->
+          <a-spin :spinning="listLoading">
+            <div v-if="listData.length" class="comment-list">
+              <!-- 商品评价卡片 -->
+              <template v-if="commentType === 'review'">
+                <div v-for="item in listData" :key="item.id" class="comment-card">
+                  <div class="comment-card__header">
+                    <span class="comment-card__buyer">{{ item.buyer_nick || '匿名用户' }}</span>
+                    <span class="comment-card__stars" :class="'star-' + starCategory(item.quality_score || item.star)">
+                      {{ '★'.repeat(item.quality_score || item.star || 0) }}{{ '☆'.repeat(5 - (item.quality_score || item.star || 0)) }}
+                    </span>
+                    <a-tag :color="statusColorMap[item.reply_status]" size="small">{{ statusTextMap[item.reply_status] }}</a-tag>
+                    <a-tag v-if="item.shop_name" color="blue" size="small">{{ item.shop_name }}</a-tag>
+                    <span class="comment-card__time">{{ formatTime(item.comment_time) }}</span>
+                  </div>
+                  <div class="comment-card__product">{{ item.item_title }}</div>
+                  <div class="comment-card__body">
+                    <div class="comment-card__text">{{ item.content || '（无文字评价）' }}</div>
+                  </div>
+                  <div v-if="item.seller_reply" class="comment-card__reply">
+                    <MessageOutlined class="reply-icon" />
+                    <span>商家回复：{{ item.seller_reply }}</span>
+                  </div>
+                  <div v-if="item.reply_status === 'pending' || item.reply_status === 'failed'" class="comment-card__actions">
+                    <a-button type="link" size="small" @click="toggleReply(item)">
+                      <template #icon><EditOutlined /></template>
+                      {{ replyingId === item.id ? '收起' : '回复' }}
+                    </a-button>
+                  </div>
+                  <div v-if="replyingId === item.id" class="comment-card__reply-input">
+                    <div class="quick-templates">
+                      <span class="quick-label">快速：</span>
+                      <span v-for="tpl in matchTemplates(item.quality_score || item.star)" :key="tpl.id" class="quick-tag" @click="replyText = tpl.content; selectedTemplateId = tpl.id">{{ tpl.name || '模板' }}</span>
+                      <span class="quick-tag ai-tag" @click="aiGenerate(item)" :class="{ loading: aiGenerating }">
+                        <RobotOutlined /> AI生成
+                      </span>
+                    </div>
+                    <a-textarea v-model:value="replyText" placeholder="输入回复内容，或点击「AI生成」自动生成..." :rows="2" :auto-size="{ minRows: 2, maxRows: 4 }" />
+                    <div class="reply-btns">
+                      <a-button type="primary" size="small" :loading="replySending" :disabled="!replyText" @click="sendReply(item)">发送</a-button>
+                      <a-button size="small" :loading="aiGenerating" @click="aiGenerate(item)"><template #icon><RobotOutlined /></template>重新生成</a-button>
+                      <a-button size="small" @click="replyingId = null">取消</a-button>
+                    </div>
+                  </div>
                 </div>
-                <div class="comment-card__product">{{ item.item_title }}</div>
-                <div class="comment-card__body">
-                  <div class="comment-card__text">{{ item.content || '（无文字评价）' }}</div>
-                </div>
-                <div v-if="item.seller_reply" class="comment-card__reply">
-                  <MessageOutlined class="reply-icon" />
-                  <span>商家回复：{{ item.seller_reply }}</span>
-                </div>
-                <div v-if="item.reply_status === 'pending' || item.reply_status === 'failed'" class="comment-card__actions">
-                  <a-button type="link" size="small" @click="toggleReply(item)">
-                    <template #icon><EditOutlined /></template>
-                    {{ replyingId === item.id ? '收起' : '回复' }}
-                  </a-button>
-                </div>
-                <div v-if="replyingId === item.id" class="comment-card__reply-input">
-                  <div class="quick-templates">
-                    <span class="quick-label">快速：</span>
-                    <span v-for="tpl in matchTemplates(item.quality_score || item.star)" :key="tpl.id" class="quick-tag" @click="replyText = tpl.content; selectedTemplateId = tpl.id">{{ tpl.name || '模板' }}</span>
-                    <span class="quick-tag ai-tag" @click="aiGenerate(item)" :class="{ loading: aiGenerating }">
-                      <RobotOutlined /> AI生成
+              </template>
+
+              <!-- 磁力短视频评论卡片 -->
+              <template v-else>
+                <div v-for="item in listData" :key="item.id || item.comment_id" class="comment-card ad-comment-card">
+                  <div class="comment-card__header">
+                    <span class="comment-card__buyer">{{ item.nickname || '用户' }}</span>
+                    <a-tag :color="item.replied ? 'green' : 'default'" size="small">{{ item.replied ? '已回复' : '待回复' }}</a-tag>
+                    <a-tag v-if="item.advertiser_name" color="geekblue" size="small">{{ item.advertiser_name }}</a-tag>
+                    <span class="comment-card__time">{{ formatTime(item.post_time) }}</span>
+                  </div>
+                  <div v-if="item.photo_title" class="comment-card__product"><VideoCameraOutlined /> {{ item.photo_title }}</div>
+                  <div class="comment-card__body">
+                    <div class="comment-card__text">{{ item.content }}</div>
+                  </div>
+                  <div v-if="item.reply_content && item.replied" class="comment-card__reply">
+                    <MessageOutlined class="reply-icon" />
+                    <span>
+                      <a-tag v-if="item.reply_type === 'ai'" color="purple" size="small" style="margin-right:4px">AI</a-tag>
+                      {{ item.reply_content }}
                     </span>
                   </div>
-                  <a-textarea v-model:value="replyText" placeholder="输入回复内容，或点击「AI生成」自动生成..." :rows="2" :auto-size="{ minRows: 2, maxRows: 4 }" />
-                  <div class="reply-btns">
-                    <a-button type="primary" size="small" :loading="replySending" :disabled="!replyText" @click="sendReply(item)">发送</a-button>
-                    <a-button size="small" :loading="aiGenerating" @click="aiGenerate(item)"><template #icon><RobotOutlined /></template>重新生成</a-button>
-                    <a-button size="small" @click="replyingId = null">取消</a-button>
+                  <div v-if="!item.replied" class="comment-card__actions">
+                    <a-button type="link" size="small" @click="toggleReply(item)">
+                      <template #icon><EditOutlined /></template>
+                      {{ replyingId === (item.id || item.comment_id) ? '收起' : '回复' }}
+                    </a-button>
+                    <a-button type="link" size="small" @click="adAiReply(item)" :loading="item._aiLoading">
+                      <template #icon><RobotOutlined /></template>
+                      AI回复
+                    </a-button>
+                    <a-button type="link" size="small" danger @click="shieldComment(item)" :loading="item._shieldLoading">
+                      屏蔽
+                    </a-button>
+                  </div>
+                  <div v-if="replyingId === (item.id || item.comment_id)" class="comment-card__reply-input">
+                    <a-textarea v-model:value="replyText" placeholder="输入回复内容..." :rows="2" :auto-size="{ minRows: 2, maxRows: 4 }" />
+                    <div class="reply-btns">
+                      <a-button type="primary" size="small" :loading="replySending" :disabled="!replyText" @click="sendAdReply(item)">发送</a-button>
+                      <a-button size="small" @click="replyingId = null">取消</a-button>
+                    </div>
                   </div>
                 </div>
-              </div>
+              </template>
             </div>
-            <a-empty v-else description="暂无评价数据，请先拉取评价" />
+            <a-empty v-else :description="commentType === 'review' ? '暂无评价数据，请先拉取评价' : '暂无评论数据，请先同步评论'" />
           </a-spin>
 
-          <div v-if="reviewPagination.total > 0" class="pagination-wrap">
-            <a-pagination v-model:current="reviewPagination.current" :total="reviewPagination.total" :page-size="reviewPagination.pageSize" size="small" show-quick-jumper @change="onPageChange" />
+          <div v-if="pagination.total > 0" class="pagination-wrap">
+            <a-pagination v-model:current="pagination.current" :total="pagination.total" :page-size="pagination.pageSize" size="small" show-quick-jumper @change="onPageChange" />
           </div>
         </div>
       </a-tab-pane>
@@ -167,7 +227,10 @@
             </div>
             <div class="config-card__body">
               <div class="ai-desc">
-                开启后系统每隔指定时间自动拉取新评价，并用AI逐条生成针对性回复发送。站在「雪玲妃护肤旗舰店」品牌角度，语气亲切正向。
+                {{ commentType === 'review'
+                  ? '开启后系统每隔指定时间自动拉取新评价，并用AI逐条生成针对性回复发送。站在「雪玲妃护肤旗舰店」品牌角度，语气亲切正向。'
+                  : '开启后系统每隔指定时间自动拉取磁力广告视频新评论，并用AI生成互动回复。语气热情、接地气，引导用户下单。'
+                }}
               </div>
               <div class="config-row" style="margin-top:12px">
                 <span class="config-label">执行间隔</span>
@@ -189,57 +252,61 @@
             </div>
           </div>
 
-          <!-- 模板回复设置 -->
-          <div class="config-card" style="margin-top:16px">
-            <div class="config-card__header">
-              <span class="config-card__title">模板自动回复</span>
-              <a-switch v-model:checked="settings.auto_reply_enabled" checked-children="开启" un-checked-children="关闭" />
-            </div>
-            <div class="config-card__body">
-              <div class="config-row">
-                <span class="config-label">自动回复星级</span>
-                <a-checkbox-group v-model:value="settings.auto_reply_categories">
-                  <a-checkbox value="5">5星</a-checkbox>
-                  <a-checkbox value="4">4星</a-checkbox>
-                  <a-checkbox value="3">3星</a-checkbox>
-                  <a-checkbox value="2">2星</a-checkbox>
-                  <a-checkbox value="1">1星</a-checkbox>
-                </a-checkbox-group>
+          <!-- 模板回复设置（仅商品评价） -->
+          <template v-if="commentType === 'review'">
+            <div class="config-card" style="margin-top:16px">
+              <div class="config-card__header">
+                <span class="config-card__title">模板自动回复</span>
+                <a-switch v-model:checked="settings.auto_reply_enabled" checked-children="开启" un-checked-children="关闭" />
+              </div>
+              <div class="config-card__body">
+                <div class="config-row">
+                  <span class="config-label">自动回复星级</span>
+                  <a-checkbox-group v-model:value="settings.auto_reply_categories">
+                    <a-checkbox value="5">5星</a-checkbox>
+                    <a-checkbox value="4">4星</a-checkbox>
+                    <a-checkbox value="3">3星</a-checkbox>
+                    <a-checkbox value="2">2星</a-checkbox>
+                    <a-checkbox value="1">1星</a-checkbox>
+                  </a-checkbox-group>
+                </div>
               </div>
             </div>
-          </div>
+          </template>
 
           <div style="margin-top:16px">
             <a-button type="primary" :loading="settingsSaving" @click="saveSettings">保存设置</a-button>
           </div>
 
-          <!-- 模板管理 -->
-          <div class="config-card" style="margin-top:16px">
-            <div class="config-card__header">
-              <span class="config-card__title">回复模板</span>
-              <a-button type="primary" size="small" @click="openTemplateForm()">+ 新增</a-button>
-            </div>
-            <div class="config-card__body">
-              <div v-if="templates.length" class="template-list">
-                <div v-for="tpl in templates" :key="tpl.id" class="template-card">
-                  <div class="tpl-header">
-                    <span class="tpl-name">{{ tpl.name || '未命名模板' }}</span>
-                    <div class="tpl-tags">
-                      <a-tag v-if="tpl.is_default" color="blue" size="small">默认</a-tag>
-                      <a-tag size="small">{{ tpl.star_min }}-{{ tpl.star_max }}星</a-tag>
-                      <a-tag v-if="tpl.use_count" size="small" color="default">已用{{ tpl.use_count }}次</a-tag>
+          <!-- 模板管理（仅商品评价） -->
+          <template v-if="commentType === 'review'">
+            <div class="config-card" style="margin-top:16px">
+              <div class="config-card__header">
+                <span class="config-card__title">回复模板</span>
+                <a-button type="primary" size="small" @click="openTemplateForm()">+ 新增</a-button>
+              </div>
+              <div class="config-card__body">
+                <div v-if="templates.length" class="template-list">
+                  <div v-for="tpl in templates" :key="tpl.id" class="template-card">
+                    <div class="tpl-header">
+                      <span class="tpl-name">{{ tpl.name || '未命名模板' }}</span>
+                      <div class="tpl-tags">
+                        <a-tag v-if="tpl.is_default" color="blue" size="small">默认</a-tag>
+                        <a-tag size="small">{{ tpl.star_min }}-{{ tpl.star_max }}星</a-tag>
+                        <a-tag v-if="tpl.use_count" size="small" color="default">已用{{ tpl.use_count }}次</a-tag>
+                      </div>
+                    </div>
+                    <div class="tpl-content">{{ tpl.content }}</div>
+                    <div class="tpl-actions">
+                      <a-button type="link" size="small" @click="openTemplateForm(tpl)">编辑</a-button>
+                      <a-button type="link" size="small" danger @click="deleteTemplate(tpl.id)">删除</a-button>
                     </div>
                   </div>
-                  <div class="tpl-content">{{ tpl.content }}</div>
-                  <div class="tpl-actions">
-                    <a-button type="link" size="small" @click="openTemplateForm(tpl)">编辑</a-button>
-                    <a-button type="link" size="small" danger @click="deleteTemplate(tpl.id)">删除</a-button>
-                  </div>
                 </div>
+                <a-empty v-else description="暂无模板" />
               </div>
-              <a-empty v-else description="暂无模板" />
             </div>
-          </div>
+          </template>
         </div>
       </a-tab-pane>
 
@@ -249,7 +316,7 @@
           <div class="stat-row" v-if="logStats.total > 0">
             <div class="stat-tag-wrap">
               <span class="overview-tag">总计 {{ logStats.total }}</span>
-              <span class="overview-tag" style="background:#e6f7ff;color:#1890ff">模板 {{ logStats.auto }}</span>
+              <span v-if="commentType === 'review'" class="overview-tag" style="background:#e6f7ff;color:#1890ff">模板 {{ logStats.auto }}</span>
               <span class="overview-tag" style="background:#f0f5ff;color:#722ed1">AI {{ logStats.ai || 0 }}</span>
               <span class="overview-tag" style="background:#f6ffed;color:#52c41a">手动 {{ logStats.manual }}</span>
               <span class="overview-tag success">成功 {{ logStats.success }}</span>
@@ -259,7 +326,7 @@
 
           <div class="filter-bar">
             <a-select v-model:value="logFilters.reply_type" placeholder="回复类型" allow-clear style="min-width:100px" @change="fetchLogs">
-              <a-select-option value="auto">模板回复</a-select-option>
+              <a-select-option v-if="commentType === 'review'" value="auto">模板回复</a-select-option>
               <a-select-option value="ai">AI回复</a-select-option>
               <a-select-option value="manual">手动回复</a-select-option>
             </a-select>
@@ -273,14 +340,14 @@
             <div v-if="logs.length" class="comment-list">
               <div v-for="log in logs" :key="log.id" class="log-card">
                 <div class="log-card__header">
-                  <span class="log-card__buyer">{{ log.buyer_nick || '匿名' }}</span>
+                  <span class="log-card__buyer">{{ log.buyer_nick || log.nickname || '匿名' }}</span>
                   <a-tag :color="replyTypeColor(log.reply_type)" size="small">{{ replyTypeText(log.reply_type) }}</a-tag>
                   <a-tag :color="log.reply_status === 'success' ? 'green' : 'red'" size="small">{{ log.reply_status === 'success' ? '成功' : '失败' }}</a-tag>
                   <span class="log-card__stars" v-if="log.star">{{ '★'.repeat(log.star) }}</span>
                   <span class="log-card__time">{{ formatTime(log.created_at) }}</span>
                 </div>
-                <div v-if="log.item_title" class="log-card__product">{{ log.item_title }}</div>
-                <div class="log-card__content"><span class="log-label">评价：</span>{{ log.comment_content || '（无）' }}</div>
+                <div v-if="log.item_title || log.photo_title" class="log-card__product">{{ log.item_title || log.photo_title }}</div>
+                <div class="log-card__content"><span class="log-label">评论：</span>{{ log.comment_content || '（无）' }}</div>
                 <div class="log-card__reply"><span class="log-label">回复：</span>{{ log.reply_content }}</div>
                 <div v-if="log.fail_reason" class="log-card__fail">失败原因：{{ log.fail_reason }}</div>
               </div>
@@ -316,13 +383,25 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { message } from 'ant-design-vue'
-import { ReloadOutlined, CloudDownloadOutlined, MessageOutlined, EditOutlined, RobotOutlined } from '@ant-design/icons-vue'
+import { ReloadOutlined, CloudDownloadOutlined, MessageOutlined, EditOutlined, RobotOutlined, VideoCameraOutlined } from '@ant-design/icons-vue'
 import request from '../utils/request'
 
+// ===== 类型切换 =====
+const commentType = ref('review') // 'review' 商品评价 | 'ad' 磁力短视频评论
+const typeOptions = [
+  { label: '商品评价', value: 'review' },
+  { label: '磁力短视频评论', value: 'ad' },
+]
+
 const activeTab = ref('comments')
+const shops = ref([])
 const shopId = ref(null)
 const statusColorMap = { pending: 'default', replied: 'green', failed: 'red' }
 const statusTextMap = { pending: '待回复', replied: '已回复', failed: '失败' }
+
+const timerRunning = computed(() => commentType.value === 'review' ? overview.timer_running : adOverview.timer_running)
+const currentInterval = computed(() => commentType.value === 'review' ? overview.auto_reply_interval : adSettings.auto_reply_interval)
+const curStats = computed(() => commentType.value === 'review' ? overview : adOverview)
 
 function starCategory(star) { return star >= 4 ? 'positive' : star === 3 ? 'neutral' : 'negative' }
 function replyTypeColor(type) { return type === 'ai' ? 'purple' : type === 'auto' ? 'blue' : 'green' }
@@ -342,7 +421,7 @@ function formatShortTime(dateStr) {
   return `${(d.getMonth()+1).toString().padStart(2,'0')}-${d.getDate().toString().padStart(2,'0')} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`
 }
 
-// ===== 概览 =====
+// ===== 概览（商品评价）=====
 const overview = reactive({ total: 0, pending: 0, replied: 0, failed: 0, positive: 0, neutral: 0, negative: 0, avg_star: 0, today_comments: 0, today_replies: 0, yesterday_comments: 0, yesterday_replies: 0, timer_running: false, auto_reply_interval: 30 })
 
 async function fetchOverview() {
@@ -353,54 +432,95 @@ async function fetchOverview() {
   } catch (e) {}
 }
 
+// ===== 概览（磁力评论）=====
+const adOverview = reactive({ total: 0, pending: 0, replied: 0, today_comments: 0, today_replies: 0, yesterday_comments: 0, yesterday_replies: 0, timer_running: false })
+
+async function fetchAdOverview() {
+  if (!shopId.value) return
+  try {
+    const res = await request.get('/ks-ad-comments/list', { params: { shop_id: shopId.value, page: 1, page_size: 1 } })
+    const d = res.data || res
+    const stats = d.stats || {}
+    adOverview.total = stats.total_count || 0
+    adOverview.pending = stats.pending_count || 0
+    adOverview.replied = stats.replied_count || 0
+    adOverview.today_comments = stats.today_count || 0
+    adOverview.today_replies = stats.today_replied || 0
+    adOverview.yesterday_comments = stats.yesterday_count || 0
+    adOverview.yesterday_replies = stats.yesterday_replied || 0
+  } catch (e) {}
+  // 检查定时器状态
+  try {
+    const res = await request.get('/ks-ad-comments/settings', { params: { shop_id: shopId.value } })
+    const d = res.data || res
+    adOverview.timer_running = !!d.ai_reply_enabled
+  } catch (e) {}
+}
+
 // ===== 最新评论滚动 =====
 const latestComments = ref([])
 const scrollList = computed(() => latestComments.value.length > 3 ? [...latestComments.value, ...latestComments.value] : latestComments.value)
 let latestTimer = null
 
 async function fetchLatest() {
-  if (!shopId.value) return
+  if (!shopId.value || commentType.value !== 'review') return
   try {
     const res = await request.get('/ks-reviews/latest', { params: { shop_id: shopId.value, limit: 20 } })
     latestComments.value = res.data || res || []
   } catch (e) {}
 }
 
-// ===== 评价列表 =====
-const reviews = ref([])
-const reviewsLoading = ref(false)
+// ===== 列表数据 =====
+const listData = ref([])
+const listLoading = ref(false)
 const pulling = ref(false)
 const batchReplying = ref(false)
 const aiBatchReplying = ref(false)
 const filters = reactive({ status: undefined, star: undefined, keyword: '' })
-const reviewPagination = reactive({ current: 1, pageSize: 20, total: 0 })
+const pagination = reactive({ current: 1, pageSize: 20, total: 0 })
 
-async function fetchReviews() {
+async function fetchList() {
   if (!shopId.value) return
-  reviewsLoading.value = true
+  listLoading.value = true
   try {
-    const params = { shop_id: shopId.value, page: reviewPagination.current, page_size: reviewPagination.pageSize }
-    if (filters.status) params.status = filters.status
-    if (filters.star) params.star = filters.star
-    if (filters.keyword) params.keyword = filters.keyword
-    const res = await request.get('/ks-reviews/list', { params })
-    const data = res.data || res
-    reviews.value = data.list || []
-    reviewPagination.total = data.total || 0
-  } catch (e) { reviews.value = [] }
-  finally { reviewsLoading.value = false }
+    if (commentType.value === 'review') {
+      const params = { shop_id: shopId.value, page: pagination.current, page_size: pagination.pageSize }
+      if (filters.status) params.status = filters.status
+      if (filters.star) params.star = filters.star
+      if (filters.keyword) params.keyword = filters.keyword
+      const res = await request.get('/ks-reviews/list', { params })
+      const data = res.data || res
+      listData.value = data.list || []
+      pagination.total = data.total || 0
+    } else {
+      const params = { shop_id: shopId.value, page: pagination.current, page_size: pagination.pageSize }
+      if (filters.status === 'pending') params.replied = '0'
+      else if (filters.status === 'replied') params.replied = '1'
+      const res = await request.get('/ks-ad-comments/list', { params })
+      const data = res.data || res
+      listData.value = (data.list || []).map(c => ({ ...c, _aiLoading: false, _shieldLoading: false }))
+      pagination.total = data.total || 0
+    }
+  } catch (e) { listData.value = [] }
+  finally { listLoading.value = false }
 }
 
-function onPageChange(page) { reviewPagination.current = page; fetchReviews() }
+function onPageChange(page) { pagination.current = page; fetchList() }
 
-async function pullReviews() {
+async function pullData() {
   if (!shopId.value) return
   pulling.value = true
   try {
-    const res = await request.post('/ks-reviews/pull', { shop_id: shopId.value })
-    message.success(res.msg || '拉取完成')
-    await Promise.all([fetchReviews(), fetchOverview(), fetchLatest()])
-  } catch (e) { message.error('拉取失败') }
+    if (commentType.value === 'review') {
+      const res = await request.post('/ks-reviews/pull', { shop_id: shopId.value })
+      message.success(res.msg || '拉取完成')
+    } else {
+      const res = await request.post('/ks-ad-comments/sync', { shop_id: shopId.value })
+      const d = res.data || res
+      message.success(d.msg || res.msg || '同步完成')
+    }
+    await refreshAll()
+  } catch (e) { message.error('操作失败') }
   finally { pulling.value = false }
 }
 
@@ -410,7 +530,7 @@ async function batchReply() {
   try {
     const res = await request.post('/ks-reviews/batch-reply', { shop_id: shopId.value })
     message.success(res.msg || '批量回复完成')
-    await Promise.all([fetchReviews(), fetchOverview()])
+    await refreshAll()
   } catch (e) { message.error('批量回复失败') }
   finally { batchReplying.value = false }
 }
@@ -420,10 +540,17 @@ async function aiBatchReply() {
   aiBatchReplying.value = true
   message.loading({ content: 'AI正在逐条生成回复并发送...', key: 'ai-batch', duration: 0 })
   try {
-    const res = await request.post('/ks-reviews/ai-batch-reply', { shop_id: shopId.value })
-    message.destroy('ai-batch')
-    message.success(res.msg || 'AI批量回复完成')
-    await Promise.all([fetchReviews(), fetchOverview()])
+    if (commentType.value === 'review') {
+      const res = await request.post('/ks-reviews/ai-batch-reply', { shop_id: shopId.value })
+      message.destroy('ai-batch')
+      message.success(res.msg || 'AI批量回复完成')
+    } else {
+      const res = await request.post('/ks-ad-comments/batch-reply', { shop_id: shopId.value, limit: 20 })
+      message.destroy('ai-batch')
+      const d = res.data || res
+      message.success(d.msg || res.msg || 'AI批量回复完成')
+    }
+    await refreshAll()
   } catch (e) { message.destroy('ai-batch'); message.error('AI批量回复失败') }
   finally { aiBatchReplying.value = false }
 }
@@ -436,8 +563,9 @@ const aiGenerating = ref(false)
 const selectedTemplateId = ref(null)
 
 function toggleReply(item) {
-  if (replyingId.value === item.id) { replyingId.value = null }
-  else { replyingId.value = item.id; replyText.value = ''; selectedTemplateId.value = null }
+  const id = item.id || item.comment_id
+  if (replyingId.value === id) { replyingId.value = null }
+  else { replyingId.value = id; replyText.value = ''; selectedTemplateId.value = null }
 }
 function matchTemplates(star) { return templates.value.filter(t => (star||5) >= t.star_min && (star||5) <= t.star_max) }
 
@@ -463,40 +591,98 @@ async function sendReply(item) {
     })
     message.success('回复成功')
     item.seller_reply = replyText.value; item.reply_status = 'replied'
-    replyingId.value = null; replyText.value = ''; fetchOverview()
+    replyingId.value = null; replyText.value = ''; fetchCurrentOverview()
   } catch (e) { message.error('回复失败') }
   finally { replySending.value = false }
 }
 
+// ===== 磁力评论操作 =====
+async function adAiReply(item) {
+  item._aiLoading = true
+  try {
+    const res = await request.post('/ks-ad-comments/reply', { comment_id: item.comment_id, use_ai: true })
+    const d = res.data || res
+    if (d.reply_content) { item.reply_content = d.reply_content; item.replied = 1; item.reply_type = 'ai' }
+    message.success(res.msg || d.msg || '回复成功')
+    fetchCurrentOverview()
+  } catch (e) { message.error('回复失败') }
+  finally { item._aiLoading = false }
+}
+
+async function sendAdReply(item) {
+  if (!replyText.value) return
+  replySending.value = true
+  try {
+    const res = await request.post('/ks-ad-comments/reply', { comment_id: item.comment_id, reply_content: replyText.value })
+    const d = res.data || res
+    if (d.reply_content) { item.reply_content = d.reply_content; item.replied = 1; item.reply_type = 'manual' }
+    message.success(res.msg || d.msg || '回复成功')
+    replyingId.value = null; replyText.value = ''; fetchCurrentOverview()
+  } catch (e) { message.error('回复失败') }
+  finally { replySending.value = false }
+}
+
+async function shieldComment(item) {
+  item._shieldLoading = true
+  try {
+    const res = await request.post('/ks-ad-comments/shield', { comment_id: item.comment_id })
+    message.success(res.msg || (res.data || {}).msg || '已屏蔽')
+    fetchList()
+  } catch (e) { message.error('屏蔽失败') }
+  finally { item._shieldLoading = false }
+}
+
 // ===== 设置 =====
 const settings = reactive({ auto_reply_enabled: false, auto_reply_categories: ['5','4'], ai_reply_enabled: false, auto_reply_interval: 30, timer_running: false })
+const adSettings = reactive({ ai_reply_enabled: false, auto_reply_interval: 30 })
 const settingsSaving = ref(false)
 
 async function fetchSettings() {
   if (!shopId.value) return
   try {
-    const res = await request.get('/ks-reviews/settings', { params: { shop_id: shopId.value } })
-    const data = res.data || res
-    settings.auto_reply_enabled = !!data.auto_reply_enabled
-    settings.auto_reply_categories = data.auto_reply_categories || ['5','4']
-    settings.ai_reply_enabled = !!data.ai_reply_enabled
-    settings.auto_reply_interval = data.auto_reply_interval || 30
-    settings.timer_running = !!data.timer_running
+    if (commentType.value === 'review') {
+      const res = await request.get('/ks-reviews/settings', { params: { shop_id: shopId.value } })
+      const data = res.data || res
+      settings.auto_reply_enabled = !!data.auto_reply_enabled
+      settings.auto_reply_categories = data.auto_reply_categories || ['5','4']
+      settings.ai_reply_enabled = !!data.ai_reply_enabled
+      settings.auto_reply_interval = data.auto_reply_interval || 30
+      settings.timer_running = !!data.timer_running
+    } else {
+      const res = await request.get('/ks-ad-comments/settings', { params: { shop_id: shopId.value } })
+      const data = res.data || res
+      settings.ai_reply_enabled = !!data.ai_reply_enabled
+      settings.auto_reply_interval = data.auto_reply_interval || 30
+      settings.timer_running = !!data.ai_reply_enabled
+      adSettings.ai_reply_enabled = !!data.ai_reply_enabled
+      adSettings.auto_reply_interval = data.auto_reply_interval || 30
+    }
   } catch (e) {}
 }
 
 async function saveSettings() {
   settingsSaving.value = true
   try {
-    const res = await request.post('/ks-reviews/settings', {
-      shop_id: shopId.value, auto_reply_enabled: settings.auto_reply_enabled,
-      auto_reply_stars: settings.auto_reply_categories, ai_reply_enabled: settings.ai_reply_enabled,
-      auto_reply_interval: settings.auto_reply_interval,
-    })
-    const data = res.data || res
-    settings.timer_running = !!data.timer_running
+    if (commentType.value === 'review') {
+      const res = await request.post('/ks-reviews/settings', {
+        shop_id: shopId.value, auto_reply_enabled: settings.auto_reply_enabled,
+        auto_reply_stars: settings.auto_reply_categories, ai_reply_enabled: settings.ai_reply_enabled,
+        auto_reply_interval: settings.auto_reply_interval,
+      })
+      const data = res.data || res
+      settings.timer_running = !!data.timer_running
+    } else {
+      await request.post('/ks-ad-comments/settings', {
+        shop_id: shopId.value, ai_reply_enabled: settings.ai_reply_enabled,
+        auto_reply_interval: settings.auto_reply_interval,
+      })
+      settings.timer_running = !!settings.ai_reply_enabled
+      adSettings.ai_reply_enabled = settings.ai_reply_enabled
+      adSettings.auto_reply_interval = settings.auto_reply_interval
+      adOverview.timer_running = !!settings.ai_reply_enabled
+    }
     message.success('设置已保存')
-    fetchOverview()
+    fetchCurrentOverview()
   } catch (e) { message.error('保存失败') }
   finally { settingsSaving.value = false }
 }
@@ -509,7 +695,7 @@ const templateSaving = ref(false)
 const templateForm = reactive({ name: '', content: '', star_min: 1, star_max: 5, is_default: false })
 
 async function fetchTemplates() {
-  if (!shopId.value) return
+  if (!shopId.value || commentType.value !== 'review') return
   try { const res = await request.get('/ks-reviews/templates', { params: { shop_id: shopId.value } }); templates.value = res.data || res || [] } catch (e) {}
 }
 function openTemplateForm(tpl) {
@@ -539,31 +725,76 @@ async function fetchLogs() {
   if (!shopId.value) return
   logsLoading.value = true
   try {
-    const params = { shop_id: shopId.value, page: logPagination.current, page_size: logPagination.pageSize }
-    if (logFilters.reply_type) params.reply_type = logFilters.reply_type
-    if (logFilters.reply_status) params.reply_status = logFilters.reply_status
-    const res = await request.get('/ks-reviews/logs', { params })
-    const data = res.data || res
-    logs.value = data.list || []; logPagination.total = data.total || 0
-    if (data.stats) Object.assign(logStats, data.stats)
+    if (commentType.value === 'review') {
+      const params = { shop_id: shopId.value, page: logPagination.current, page_size: logPagination.pageSize }
+      if (logFilters.reply_type) params.reply_type = logFilters.reply_type
+      if (logFilters.reply_status) params.reply_status = logFilters.reply_status
+      const res = await request.get('/ks-reviews/logs', { params })
+      const data = res.data || res
+      logs.value = data.list || []; logPagination.total = data.total || 0
+      if (data.stats) Object.assign(logStats, data.stats)
+    } else {
+      const params = { shop_id: shopId.value, page: logPagination.current, page_size: logPagination.pageSize }
+      const res = await request.get('/ks-ad-comments/logs', { params })
+      const data = res.data || res
+      logs.value = data.list || []; logPagination.total = data.total || 0
+      // 计算日志统计
+      logStats.total = data.total || logs.value.length
+      logStats.ai = logs.value.filter(l => l.reply_type === 'ai').length
+      logStats.manual = logs.value.filter(l => l.reply_type === 'manual').length
+      logStats.auto = 0
+      logStats.success = logs.value.filter(l => l.reply_status === 'success').length
+      logStats.fail = logs.value.filter(l => l.reply_status === 'fail').length
+    }
   } catch (e) { logs.value = [] }
   finally { logsLoading.value = false }
 }
 function onLogPageChange(page) { logPagination.current = page; fetchLogs() }
+
+// ===== 概览自适应 =====
+function fetchCurrentOverview() {
+  if (commentType.value === 'review') fetchOverview()
+  else fetchAdOverview()
+}
+
+async function refreshAll() {
+  if (commentType.value === 'review') {
+    await Promise.all([fetchOverview(), fetchList(), fetchSettings(), fetchTemplates(), fetchLatest()])
+  } else {
+    await Promise.all([fetchAdOverview(), fetchList(), fetchSettings()])
+  }
+}
+
+function onTypeChange() {
+  // 重置筛选
+  filters.status = undefined
+  filters.star = undefined
+  filters.keyword = ''
+  pagination.current = 1
+  logPagination.current = 1
+  activeTab.value = 'comments'
+  refreshAll()
+}
+
+function onShopChange() {
+  pagination.current = 1
+  logPagination.current = 1
+  refreshAll()
+}
 
 // ===== 初始化 =====
 onMounted(async () => {
   try {
     const res = await request.get('/ks/accounts')
     const accounts = res.data || res || []
+    shops.value = accounts
     if (accounts.length) {
       shopId.value = accounts[0].shop_id
-      await Promise.all([fetchOverview(), fetchReviews(), fetchSettings(), fetchTemplates(), fetchLatest()])
+      await refreshAll()
     }
   } catch (e) { message.error('获取店铺信息失败') }
 
-  // 每60秒刷新最新评论和概览
-  latestTimer = setInterval(() => { fetchLatest(); fetchOverview() }, 60000)
+  latestTimer = setInterval(() => { fetchLatest(); fetchCurrentOverview() }, 60000)
 })
 
 onUnmounted(() => { if (latestTimer) clearInterval(latestTimer) })
@@ -572,6 +803,7 @@ onUnmounted(() => { if (latestTimer) clearInterval(latestTimer) })
 <style scoped>
 .ks-reviews { max-width: 1200px; margin: 0 auto; }
 .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 8px; }
+.header-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .page-title { font-size: 20px; font-weight: 600; margin: 0; }
 .timer-status { font-size: 12px; color: #52c41a; display: flex; align-items: center; gap: 6px; }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
@@ -579,8 +811,19 @@ onUnmounted(() => { if (latestTimer) clearInterval(latestTimer) })
 .status-dot.stopped { background: #d9d9d9; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 
+/* 类型标识 */
+.type-banner {
+  display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+  border-radius: 8px; margin-bottom: 16px; font-size: 13px;
+}
+.type-banner.review { background: linear-gradient(135deg, #f6ffed 0%, #e6f7ff 100%); border: 1px solid #b7eb8f; }
+.type-banner.ad { background: linear-gradient(135deg, #f0f5ff 0%, #f9f0ff 100%); border: 1px solid #d3adf7; }
+.type-icon { font-size: 18px; }
+.type-text { font-weight: 600; color: #333; }
+.type-desc { color: #8c8c8c; font-size: 12px; }
+
 /* 数据概览卡片 */
-.stat-cards { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 16px; }
+.stat-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
 .stat-card {
   background: #fff; border: 1px solid #f0f0f0; border-radius: 8px; padding: 14px 16px; text-align: center;
 }
@@ -604,14 +847,9 @@ onUnmounted(() => { if (latestTimer) clearInterval(latestTimer) })
 .latest-scroll__count { font-size: 12px; color: #8c8c8c; }
 .latest-scroll__body { height: 160px; overflow: hidden; position: relative; }
 .scroll-inner { padding: 8px 0; }
-.scroll-inner.scroll-animate {
-  animation: scrollUp 30s linear infinite;
-}
+.scroll-inner.scroll-animate { animation: scrollUp 30s linear infinite; }
 .scroll-inner.scroll-animate:hover { animation-play-state: paused; }
-@keyframes scrollUp {
-  0% { transform: translateY(0); }
-  100% { transform: translateY(-50%); }
-}
+@keyframes scrollUp { 0% { transform: translateY(0); } 100% { transform: translateY(-50%); } }
 .scroll-item {
   display: flex; align-items: center; gap: 8px; padding: 5px 16px; font-size: 12px;
   border-bottom: 1px solid #fafafa;
@@ -640,6 +878,7 @@ onUnmounted(() => { if (latestTimer) clearInterval(latestTimer) })
 
 .comment-list { display: flex; flex-direction: column; gap: 12px; }
 .comment-card { background: #fff; border: 1px solid #f0f0f0; border-radius: 8px; padding: 14px 16px; }
+.comment-card.ad-comment-card { border-left: 3px solid #722ed1; }
 .comment-card__header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
 .comment-card__buyer { font-size: 13px; font-weight: 600; }
 .comment-card__stars { font-size: 13px; }
@@ -652,7 +891,7 @@ onUnmounted(() => { if (latestTimer) clearInterval(latestTimer) })
 .comment-card__text { font-size: 13px; line-height: 1.6; }
 .comment-card__reply { background: #f9f9f9; padding: 8px 12px; border-radius: 6px; font-size: 12px; color: #666; display: flex; align-items: flex-start; gap: 6px; }
 .reply-icon { color: #1677ff; margin-top: 2px; }
-.comment-card__actions { margin-top: 8px; }
+.comment-card__actions { margin-top: 8px; display: flex; gap: 4px; }
 .comment-card__reply-input { margin-top: 10px; padding-top: 10px; border-top: 1px solid #f0f0f0; }
 .quick-templates { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; align-items: center; }
 .quick-label { font-size: 12px; color: #8c8c8c; }
@@ -696,5 +935,6 @@ onUnmounted(() => { if (latestTimer) clearInterval(latestTimer) })
   .tab-toolbar { flex-direction: column; }
   .filter-bar { flex-direction: column; }
   .config-row { flex-direction: column; align-items: flex-start; }
+  .type-banner { flex-wrap: wrap; }
 }
 </style>

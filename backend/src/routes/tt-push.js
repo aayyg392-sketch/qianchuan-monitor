@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
-const { auth } = require('../middleware/auth');
+const auth = require('../middleware/auth');
 const { TikTokAPI, ensureFreshToken } = require('../services/tiktok-api');
 const logger = require('../logger');
 

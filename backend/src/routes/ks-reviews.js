@@ -24,6 +24,7 @@ let autoReplyTimers = {}; // { shopId: intervalId }
         comment_id VARCHAR(64) NOT NULL,
         order_id VARCHAR(64) DEFAULT '',
         item_id VARCHAR(64) DEFAULT '',
+        item_sku_id VARCHAR(64) DEFAULT '',
         item_title VARCHAR(255) DEFAULT '',
         buyer_nick VARCHAR(100) DEFAULT '',
         star INT DEFAULT 5,
@@ -230,16 +231,16 @@ async function runAutoReply(shopId) {
         const itemId = String(c.itemId || '');
         try {
           const [result] = await db.query(`
-            INSERT INTO ks_reviews (shop_id, comment_id, order_id, item_id, item_title, buyer_nick, star, content, images,
+            INSERT INTO ks_reviews (shop_id, comment_id, order_id, item_id, item_sku_id, item_title, buyer_nick, star, content, images,
               quality_score, service_score, logistics_score, seller_reply, replied, reply_status, anonymous, comment_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE
-              content = VALUES(content), quality_score = VALUES(quality_score),
+              content = VALUES(content), item_sku_id = VALUES(item_sku_id), quality_score = VALUES(quality_score),
               service_score = VALUES(service_score), logistics_score = VALUES(logistics_score),
               replied = VALUES(replied),
               reply_status = CASE WHEN VALUES(replied) = 1 THEN 'replied' ELSE reply_status END
           `, [
-            shopId, commentId, String(c.orderId || ''), itemId,
+            shopId, commentId, String(c.orderId || ''), itemId, String(c.itemSkuId || ''),
             itemTitleMap[itemId] || '', c.anonymous ? '匿名用户' : '',
             c.qualityScore || 5, c.content || '', JSON.stringify(c.imageUrl || []),
             c.qualityScore || 5, c.serviceScore || 5, c.logisticsScore || 5,
@@ -279,7 +280,7 @@ async function runAutoReply(shopId) {
       let replyStatus = 'success', failReason = '';
       try {
         const apiRes = await ksApiPost(account.access_token, 'open.comment.add', {
-          replyToCommentId: parseInt(review.comment_id), content: aiReply, sourceType: 7,
+          outInfo: { outItemSkuId: parseInt(review.item_sku_id || review.item_id), outOrderNo: String(review.order_id) }, replyToCommentId: parseInt(review.comment_id), content: aiReply, option: { sourceType: 99 },
         });
         if (apiRes.result !== 1) { replyStatus = 'fail'; failReason = apiRes.error_msg || apiRes.sub_msg || ''; }
       } catch (apiErr) { replyStatus = 'fail'; failReason = apiErr.message; }
@@ -305,7 +306,9 @@ async function runAutoReply(shopId) {
 router.get('/overview', async (req, res) => {
   try {
     const { shop_id } = req.query;
-    if (!shop_id) return res.json({ code: -1, msg: 'shop_id必填' });
+    const contentFilter = "content != '' AND content NOT LIKE '%没有填写评价%' AND content != '此用户未填写评价内容'";
+    const shopFilter = shop_id ? 'shop_id = ?' : '1=1';
+    const shopParams = shop_id ? [shop_id] : [];
 
     const [[stats]] = await db.query(`
       SELECT
@@ -317,27 +320,38 @@ router.get('/overview', async (req, res) => {
         SUM(CASE WHEN quality_score = 3 THEN 1 ELSE 0 END) AS neutral,
         SUM(CASE WHEN quality_score <= 2 THEN 1 ELSE 0 END) AS negative,
         ROUND(AVG(quality_score), 1) AS avg_star
-      FROM ks_reviews WHERE shop_id = ? AND content != '' AND content NOT LIKE '%没有填写评价%' AND content != '此用户未填写评价内容'
-    `, [shop_id]);
+      FROM ks_reviews WHERE ${shopFilter} AND ${contentFilter}
+    `, shopParams);
 
     // 今日统计
     const [[todayComments]] = await db.query(
-      "SELECT COUNT(*) AS cnt FROM ks_reviews WHERE shop_id = ? AND DATE(comment_time) = CURDATE() AND content != '' AND content NOT LIKE '%没有填写评价%' AND content != '此用户未填写评价内容'", [shop_id]
+      `SELECT COUNT(*) AS cnt FROM ks_reviews WHERE ${shopFilter} AND DATE(comment_time) = CURDATE() AND ${contentFilter}`, shopParams
     );
     const [[todayReplies]] = await db.query(
-      'SELECT COUNT(*) AS cnt FROM ks_review_logs WHERE shop_id = ? AND DATE(created_at) = CURDATE() AND reply_status = "success"', [shop_id]
+      `SELECT COUNT(*) AS cnt FROM ks_review_logs WHERE ${shopFilter} AND DATE(created_at) = CURDATE() AND reply_status = "success"`, shopParams
     );
     // 昨日统计
     const [[yesterdayComments]] = await db.query(
-      "SELECT COUNT(*) AS cnt FROM ks_reviews WHERE shop_id = ? AND DATE(comment_time) = DATE_SUB(CURDATE(), INTERVAL 1 DAY) AND content != '' AND content NOT LIKE '%没有填写评价%' AND content != '此用户未填写评价内容'", [shop_id]
+      `SELECT COUNT(*) AS cnt FROM ks_reviews WHERE ${shopFilter} AND DATE(comment_time) = DATE_SUB(CURDATE(), INTERVAL 1 DAY) AND ${contentFilter}`, shopParams
     );
     const [[yesterdayReplies]] = await db.query(
-      'SELECT COUNT(*) AS cnt FROM ks_review_logs WHERE shop_id = ? AND DATE(created_at) = DATE_SUB(CURDATE(), INTERVAL 1 DAY) AND reply_status = "success"', [shop_id]
+      `SELECT COUNT(*) AS cnt FROM ks_review_logs WHERE ${shopFilter} AND DATE(created_at) = DATE_SUB(CURDATE(), INTERVAL 1 DAY) AND reply_status = "success"`, shopParams
     );
 
-    const [[settings]] = await db.query(
-      'SELECT auto_reply_enabled, ai_reply_enabled, auto_reply_interval FROM ks_review_settings WHERE shop_id = ?', [shop_id]
-    );
+    // 设置 & 定时器状态
+    let timerRunning = false, aiEnabled = false, autoEnabled = false, interval = 30;
+    if (shop_id) {
+      const [[settings]] = await db.query(
+        'SELECT auto_reply_enabled, ai_reply_enabled, auto_reply_interval FROM ks_review_settings WHERE shop_id = ?', [shop_id]
+      );
+      autoEnabled = settings ? !!settings.auto_reply_enabled : false;
+      aiEnabled = settings ? !!settings.ai_reply_enabled : false;
+      interval = settings?.auto_reply_interval || 30;
+      timerRunning = !!autoReplyTimers[shop_id];
+    } else {
+      // 全部模式：任意店铺有定时器即显示运行中
+      timerRunning = Object.keys(autoReplyTimers).length > 0;
+    }
 
     res.json({
       code: 0,
@@ -354,10 +368,10 @@ router.get('/overview', async (req, res) => {
         today_replies: parseInt(todayReplies?.cnt || 0),
         yesterday_comments: parseInt(yesterdayComments?.cnt || 0),
         yesterday_replies: parseInt(yesterdayReplies?.cnt || 0),
-        auto_reply_enabled: settings ? !!settings.auto_reply_enabled : false,
-        ai_reply_enabled: settings ? !!settings.ai_reply_enabled : false,
-        auto_reply_interval: settings?.auto_reply_interval || 30,
-        timer_running: !!autoReplyTimers[shop_id],
+        auto_reply_enabled: autoEnabled,
+        ai_reply_enabled: aiEnabled,
+        auto_reply_interval: interval,
+        timer_running: timerRunning,
       }
     });
   } catch (e) {
@@ -370,10 +384,12 @@ router.get('/overview', async (req, res) => {
 router.get('/latest', async (req, res) => {
   try {
     const { shop_id, limit = 20 } = req.query;
-    if (!shop_id) return res.json({ code: -1, msg: 'shop_id必填' });
+    const contentFilter = "content != '' AND content NOT LIKE '%没有填写评价%' AND content != '此用户未填写评价内容'";
+    const shopFilter = shop_id ? 'r.shop_id = ?' : '1=1';
+    const shopParams = shop_id ? [shop_id] : [];
     const [rows] = await db.query(
-      "SELECT comment_id, buyer_nick, item_title, content, quality_score, comment_time, reply_status FROM ks_reviews WHERE shop_id = ? AND content != '' AND content NOT LIKE '%没有填写评价%' AND content != '此用户未填写评价内容' ORDER BY comment_time DESC LIMIT ?",
-      [shop_id, Math.min(parseInt(limit) || 20, 50)]
+      `SELECT r.comment_id, r.buyer_nick, r.item_title, r.content, r.quality_score, r.comment_time, r.reply_status, a.shop_name FROM ks_reviews r LEFT JOIN ks_accounts a ON r.shop_id = a.shop_id WHERE ${shopFilter} AND r.${contentFilter} ORDER BY r.comment_time DESC LIMIT ?`,
+      [...shopParams, Math.min(parseInt(limit) || 20, 50)]
     );
     res.json({ code: 0, data: rows });
   } catch (e) {
@@ -428,16 +444,16 @@ router.post('/pull', async (req, res) => {
 
         try {
           const [result] = await db.query(`
-            INSERT INTO ks_reviews (shop_id, comment_id, order_id, item_id, item_title, buyer_nick, star, content, images,
+            INSERT INTO ks_reviews (shop_id, comment_id, order_id, item_id, item_sku_id, item_title, buyer_nick, star, content, images,
               quality_score, service_score, logistics_score, seller_reply, replied, reply_status, anonymous, comment_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE
-              content = VALUES(content), quality_score = VALUES(quality_score),
+              content = VALUES(content), item_sku_id = VALUES(item_sku_id), quality_score = VALUES(quality_score),
               service_score = VALUES(service_score), logistics_score = VALUES(logistics_score),
               replied = VALUES(replied),
               reply_status = CASE WHEN VALUES(replied) = 1 THEN 'replied' ELSE reply_status END
           `, [
-            shop_id, commentId, String(c.orderId || ''), itemId, itemTitle,
+            shop_id, commentId, String(c.orderId || ''), itemId, String(c.itemSkuId || ''), itemTitle,
             c.anonymous ? '匿名用户' : '', c.qualityScore || 5,
             c.content || '', JSON.stringify(c.imageUrl || []),
             c.qualityScore || 5, c.serviceScore || 5, c.logisticsScore || 5,
@@ -469,21 +485,21 @@ router.post('/pull', async (req, res) => {
 router.get('/list', async (req, res) => {
   try {
     const { shop_id, page = 1, page_size = 20, status, star, keyword } = req.query;
-    if (!shop_id) return res.json({ code: -1, msg: 'shop_id必填' });
 
     const limit = Math.min(parseInt(page_size) || 20, 100);
     const offset = (Math.max(parseInt(page) || 1, 1) - 1) * limit;
 
-    let where = "WHERE shop_id = ? AND content != '' AND content NOT LIKE '%没有填写评价%' AND content != '此用户未填写评价内容'";
-    const params = [shop_id];
+    let where = "WHERE r.content != '' AND r.content NOT LIKE '%没有填写评价%' AND r.content != '此用户未填写评价内容'";
+    const params = [];
 
-    if (status) { where += ' AND reply_status = ?'; params.push(status); }
-    if (star) { where += ' AND quality_score = ?'; params.push(parseInt(star)); }
-    if (keyword) { where += ' AND (content LIKE ? OR item_title LIKE ?)'; const kw = `%${keyword}%`; params.push(kw, kw); }
+    if (shop_id) { where += ' AND r.shop_id = ?'; params.push(shop_id); }
+    if (status) { where += ' AND r.reply_status = ?'; params.push(status); }
+    if (star) { where += ' AND r.quality_score = ?'; params.push(parseInt(star)); }
+    if (keyword) { where += ' AND (r.content LIKE ? OR r.item_title LIKE ?)'; const kw = `%${keyword}%`; params.push(kw, kw); }
 
-    const [[{ cnt }]] = await db.query(`SELECT COUNT(*) AS cnt FROM ks_reviews ${where}`, params);
+    const [[{ cnt }]] = await db.query(`SELECT COUNT(*) AS cnt FROM ks_reviews r ${where}`, params);
     const [rows] = await db.query(
-      `SELECT * FROM ks_reviews ${where} ORDER BY comment_time DESC LIMIT ? OFFSET ?`,
+      `SELECT r.*, a.shop_name FROM ks_reviews r LEFT JOIN ks_accounts a ON r.shop_id = a.shop_id ${where} ORDER BY r.comment_time DESC LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
 
@@ -510,7 +526,7 @@ router.post('/reply', async (req, res) => {
 
     try {
       const apiRes = await ksApiPost(account.access_token, 'open.comment.add', {
-        replyToCommentId: parseInt(comment_id), content, sourceType: 7,
+        outInfo: { outItemSkuId: parseInt(review.item_sku_id || review.item_id), outOrderNo: String(review.order_id) }, replyToCommentId: parseInt(comment_id), content, option: { sourceType: 99 },
       });
       if (apiRes.result !== 1) { replyStatus = 'fail'; failReason = apiRes.error_msg || apiRes.sub_msg || JSON.stringify(apiRes).slice(0, 200); }
     } catch (apiErr) { replyStatus = 'fail'; failReason = apiErr.message; }
@@ -577,7 +593,7 @@ router.post('/ai-batch-reply', async (req, res) => {
       let replyStatus = 'success', failReason = '';
       try {
         const apiRes = await ksApiPost(account.access_token, 'open.comment.add', {
-          replyToCommentId: parseInt(review.comment_id), content: aiReply, sourceType: 7,
+          outInfo: { outItemSkuId: parseInt(review.item_sku_id || review.item_id), outOrderNo: String(review.order_id) }, replyToCommentId: parseInt(review.comment_id), content: aiReply, option: { sourceType: 99 },
         });
         if (apiRes.result !== 1) { replyStatus = 'fail'; failReason = apiRes.error_msg || apiRes.sub_msg || ''; }
       } catch (apiErr) { replyStatus = 'fail'; failReason = apiErr.message; }
@@ -686,19 +702,21 @@ router.delete('/templates/:id', async (req, res) => {
 router.get('/logs', async (req, res) => {
   try {
     const { shop_id, page = 1, page_size = 20, reply_type, reply_status } = req.query;
-    if (!shop_id) return res.json({ code: -1, msg: 'shop_id必填' });
 
     const limit = Math.min(parseInt(page_size) || 20, 100);
     const offset = (Math.max(parseInt(page) || 1, 1) - 1) * limit;
 
-    let where = 'WHERE shop_id = ?';
-    const params = [shop_id];
+    let where = 'WHERE 1=1';
+    const params = [];
+    if (shop_id) { where += ' AND shop_id = ?'; params.push(shop_id); }
     if (reply_type) { where += ' AND reply_type = ?'; params.push(reply_type); }
     if (reply_status) { where += ' AND reply_status = ?'; params.push(reply_status); }
 
     const [[{ cnt }]] = await db.query(`SELECT COUNT(*) AS cnt FROM ks_review_logs ${where}`, params);
     const [rows] = await db.query(`SELECT * FROM ks_review_logs ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`, [...params, limit, offset]);
 
+    const statsWhere = shop_id ? 'WHERE shop_id = ?' : 'WHERE 1=1';
+    const statsParams = shop_id ? [shop_id] : [];
     const [[stats]] = await db.query(`
       SELECT COUNT(*) AS total,
         SUM(CASE WHEN reply_type='auto' THEN 1 ELSE 0 END) AS auto_cnt,
@@ -706,8 +724,8 @@ router.get('/logs', async (req, res) => {
         SUM(CASE WHEN reply_type='ai' THEN 1 ELSE 0 END) AS ai_cnt,
         SUM(CASE WHEN reply_status='success' THEN 1 ELSE 0 END) AS success_cnt,
         SUM(CASE WHEN reply_status='fail' THEN 1 ELSE 0 END) AS fail_cnt
-      FROM ks_review_logs WHERE shop_id = ?
-    `, [shop_id]);
+      FROM ks_review_logs ${statsWhere}
+    `, statsParams);
 
     res.json({
       code: 0,
@@ -749,7 +767,7 @@ router.post('/batch-reply', async (req, res) => {
       let replyStatus = 'success', failReason = '';
       try {
         const apiRes = await ksApiPost(account.access_token, 'open.comment.add', {
-          replyToCommentId: parseInt(review.comment_id), content: matchedTpl.content, sourceType: 7,
+          outInfo: { outItemSkuId: parseInt(review.item_sku_id || review.item_id), outOrderNo: String(review.order_id) }, replyToCommentId: parseInt(review.comment_id), content: matchedTpl.content, option: { sourceType: 99 },
         });
         if (apiRes.result !== 1) { replyStatus = 'fail'; failReason = apiRes.error_msg || apiRes.sub_msg || ''; }
       } catch (apiErr) { replyStatus = 'fail'; failReason = apiErr.message; }

@@ -705,6 +705,7 @@
                     <span class="feature-card__icon">&#128640;</span>
                     <span class="feature-card__title">追投素材消耗数据</span>
                   </div>
+                  <a-date-picker v-model:value="boostDate" size="small" :style="{width:'120px'}" :allowClear="true" placeholder="全部日期" @change="loadBoostEffect" />
                   <button class="btn-text" @click="loadBoostEffect">刷新</button>
                 </div>
                 <div class="feature-card__desc">每次追投的实际消耗数据（追投预算·消耗·ROI·转化）</div>
@@ -761,6 +762,7 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
 import request from '../utils/request'
+import dayjs from 'dayjs'
 
 const props = defineProps({
   embedded: { type: Boolean, default: false },
@@ -803,6 +805,7 @@ const matBoostConfig = ref({
 })
 const matBoostLogs = ref([])
 const matBoostLogsExpanded = ref(false)
+const boostDate = ref(dayjs())
 const boostEffectData = ref([])
 const boostEffectLoading = ref(false)
 const matBoostEffectList = computed(() => {
@@ -1267,7 +1270,9 @@ const loadBoostEffect = async () => {
   if (!currentAcc.value?.advertiser_id) return
   boostEffectLoading.value = true
   try {
-    const r = await request.get('/ai-pitcher/material-boost-effect/' + currentAcc.value.advertiser_id)
+    const params = {};
+    if (boostDate.value) params.date = boostDate.value.format('YYYY-MM-DD');
+    const r = await request.get('/ai-pitcher/material-boost-effect/' + currentAcc.value.advertiser_id, { params })
     boostEffectData.value = r.data?.list || []
   } catch (e) { console.error(e) }
   finally { boostEffectLoading.value = false }

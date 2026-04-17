@@ -2,7 +2,13 @@
 <div class="ctr-page">
   <div class="ctr-header">
     <h2>CTR素材分析 <span class="header-note">仅统计曝光量&gt;100的有效素材</span></h2>
-    <a-range-picker v-model:value="dateRange" size="small" :presets="presets" :style="{width:'280px'}" @change="loadAll" />
+    <div class="ctr-filters">
+      <a-radio-group v-model:value="dateType" size="small" button-style="solid" @change="loadAll">
+        <a-radio-button value="consume">素材消耗</a-radio-button>
+        <a-radio-button value="upload">素材上架</a-radio-button>
+      </a-radio-group>
+      <a-range-picker v-model:value="dateRange" size="small" :presets="presets" :style="{width:'280px'}" @change="loadAll" />
+    </div>
   </div>
 
   <!-- 概览卡片 -->
@@ -59,13 +65,12 @@
             <div class="rank-name">{{ m.title?.slice(0, 25) || m.material_id }}</div>
             <div class="rank-metrics">
               <span>曝光 {{ fmtNum(m.show_cnt) }}</span>
-              <span>消耗 ¥{{ m.cost.toLocaleString() }}</span>
-              <span>ROI {{ m.roi.toFixed(2) }}</span>
+              <span>消耗 ¥{{ (m.cost||0).toLocaleString() }}</span>
             </div>
           </div>
           <div class="rank-ctr green">{{ m.ctr }}%</div>
         </div>
-        <a-empty v-if="!ranking.top?.length" :image="null" description="暂无数据" />
+        <div v-if="!ranking.top?.length" class="empty-hint">暂无数据</div>
       </div>
     </div>
     <div class="ctr-section">
@@ -77,27 +82,14 @@
             <div class="rank-name">{{ m.title?.slice(0, 25) || m.material_id }}</div>
             <div class="rank-metrics">
               <span>曝光 {{ fmtNum(m.show_cnt) }}</span>
-              <span>消耗 ¥{{ m.cost.toLocaleString() }}</span>
-              <span>ROI {{ m.roi.toFixed(2) }}</span>
+              <span>消耗 ¥{{ (m.cost||0).toLocaleString() }}</span>
             </div>
           </div>
           <div class="rank-ctr red">{{ m.ctr }}%</div>
         </div>
-        <a-empty v-if="!ranking.bottom?.length" :image="null" description="暂无数据" />
+        <div v-if="!ranking.bottom?.length" class="empty-hint">暂无数据</div>
       </div>
     </div>
-  </div>
-
-  <!-- 消耗Top10素材CTR趋势 -->
-  <div class="ctr-section">
-    <div class="cs-title">消耗Top10素材CTR趋势</div>
-    <div ref="topCostRef" class="ctr-chart" style="height:300px"></div>
-  </div>
-
-  <!-- 各账户CTR对比 -->
-  <div class="ctr-section">
-    <div class="cs-title">各账户 CTR 对比</div>
-    <div ref="accCompareRef" class="ctr-chart" style="height:360px"></div>
   </div>
 
   <!-- 新素材上新看板 -->
@@ -126,7 +118,7 @@
           <div class="alert-metrics">
             <span>曝光 <b>{{ fmtNum(a.show_cnt) }}</b></span>
             <span>点击 <b>{{ fmtNum(a.click_cnt) }}</b></span>
-            <span>消耗 <b>¥{{ a.cost.toLocaleString() }}</b></span>
+            <span>消耗 <b>¥{{ (a.cost||0).toLocaleString() }}</b></span>
           </div>
         </div>
         <div class="alert-ctr">
@@ -152,6 +144,7 @@ import * as echarts from 'echarts'
 import request from '../utils/request'
 
 const dateRange = ref([dayjs(), dayjs()])
+const dateType = ref('consume') // consume=素材消耗 | upload=素材上架
 const presets = [
   { label: '今天', value: [dayjs(), dayjs()] },
   { label: '昨天', value: [dayjs().subtract(1, 'day'), dayjs().subtract(1, 'day')] },
@@ -169,9 +162,7 @@ const trendRef = ref()
 const newMatRef = ref()
 const newMatData = ref({})
 const distRef = ref()
-const topCostRef = ref()
-const accCompareRef = ref()
-let trendChart = null, distChart = null, newMatChart = null, topCostChart = null, accCompareChart = null
+let trendChart = null, distChart = null, newMatChart = null
 
 const fmtNum = v => (parseInt(v) || 0).toLocaleString()
 const pctChg = (cur, prev) => {
@@ -186,18 +177,27 @@ async function loadAll() {
   const endDate = dateRange.value[1]?.format('YYYY-MM-DD') || startDate
   const date = endDate
   const range = 'custom'
-  const [r1, r2, r3, r4, r5, r6] = await Promise.all([
-    request.get('/material-analysis/ctr-overview', { params: { start_date: startDate, end_date: endDate } }),
-    request.get('/material-analysis/ctr-ranking', { params: { start_date: startDate, end_date: endDate } }),
-    request.get('/material-analysis/ctr-trend', { params: { date } }),
-    request.get('/material-analysis/ctr-distribution', { params: { start_date: startDate, end_date: endDate } }),
-    request.get('/material-analysis/ctr-alerts', { params: { start_date: startDate, end_date: endDate } }),
-    request.get('/material-analysis/new-material-trend', { params: { date } }),
-  ])
-  if (r1.code === 0) overview.value = r1.data
-  if (r2.code === 0) ranking.value = r2.data
-  if (r5.code === 0) alerts.value = r5.data
-  if (r6?.code === 0) {
+  let r1,r2,r3,r4,r5,r6
+  try {
+    const dt = dateType.value || 'consume'
+    ;[r1, r2, r3, r4, r5, r6] = await Promise.allSettled([
+      request.get('/material-analysis/ctr-overview', { params: { start_date: startDate, end_date: endDate, date_type: dt } }),
+      request.get('/material-analysis/ctr-ranking', { params: { start_date: startDate, end_date: endDate, date_type: dt } }),
+      request.get('/material-analysis/ctr-trend', { params: { date } }),
+      request.get('/material-analysis/ctr-distribution', { params: { start_date: startDate, end_date: endDate, date_type: dt } }),
+      request.get('/material-analysis/ctr-alerts', { params: { start_date: startDate, end_date: endDate, date_type: dt } }),
+      request.get('/material-analysis/new-material-trend', { params: { date } }),
+    ])
+    r1 = r1?.value; r2 = r2?.value; r3 = r3?.value; r4 = r4?.value; r5 = r5?.value; r6 = r6?.value
+  } catch(e) { console.error('loadAll error', e); return }
+  if (r1?.code === 0 && r1.data) overview.value = r1.data
+  if (r2?.code === 0 && r2.data) ranking.value = { top: r2.data.top || [], bottom: r2.data.bottom || [] }
+  if (r5?.code === 0) {
+    // 后端返回数组，前端模板需要 { alerts: [...] } 结构
+    const arr = Array.isArray(r5.data) ? r5.data : (r5.data?.alerts || r5.data || [])
+    alerts.value = { alerts: Array.isArray(arr) ? arr : [] }
+  }
+  if (r6?.code === 0 && r6.data) {
     newMatData.value = r6.data
     await nextTick()
     if (newMatRef.value && r6.data.trend?.length) {
@@ -232,7 +232,7 @@ async function loadAll() {
 
   await nextTick()
   // 趋势图
-  if (r3.code === 0 && trendRef.value) {
+  if (r3?.code === 0 && r3.data && trendRef.value) {
     if (trendChart) trendChart.dispose()
     trendChart = echarts.init(trendRef.value)
     const t = r3.data.trend || []
@@ -257,10 +257,10 @@ async function loadAll() {
   }
 
   // 分布图
-  if (r4.code === 0 && distRef.value) {
+  if (r4?.code === 0 && r4.data && distRef.value) {
     if (distChart) distChart.dispose()
     distChart = echarts.init(distRef.value)
-    const d = r4.data
+    const d = { labels: r4.data.labels || [], values: r4.data.values || [], shows: r4.data.shows || [] }
     const barColors = ['#FF4D4F', '#FA8C16', '#FADB14', '#52C41A', '#1677FF', '#722ED1']
     const fmtShow = v => v >= 10000 ? (v / 10000).toFixed(1) + 'w' : v >= 1000 ? (v / 1000).toFixed(1) + 'k' : String(v)
     distChart.setOption({
@@ -281,66 +281,6 @@ async function loadAll() {
       ]
     })
   }
-
-  // 消耗Top10素材CTR趋势（从ranking top数据绘制）
-  if (r2.code === 0 && topCostRef.value && ranking.value.top?.length) {
-    if (topCostChart) topCostChart.dispose()
-    topCostChart = echarts.init(topCostRef.value)
-    const topMats = ranking.value.top.slice(0, 10)
-    const colors = ['#1677FF', '#52C41A', '#FA8C16', '#722ED1', '#EB2F96', '#13C2C2', '#F5222D', '#2F54EB', '#A0D911', '#FF85C0']
-    topCostChart.setOption({
-      grid: { left: 50, right: 20, top: 30, bottom: 50 },
-      legend: { type: 'scroll', bottom: 0, textStyle: { fontSize: 10 }, itemWidth: 12, itemHeight: 8, formatter: n => n.length > 10 ? n.slice(0, 10) + '..' : n },
-      xAxis: { type: 'category', data: topMats.map((m, i) => (i + 1) + ''), axisLabel: { fontSize: 10, color: '#888' } },
-      yAxis: [
-        { type: 'value', name: 'CTR%', axisLabel: { fontSize: 10, color: '#888', formatter: v => v + '%' }, splitLine: { lineStyle: { type: 'dashed', color: '#f0f0f0' } } },
-        { type: 'value', name: '消耗¥', position: 'right', axisLabel: { fontSize: 10, color: '#FA8C16', formatter: v => v >= 10000 ? (v / 10000).toFixed(0) + 'w' : v >= 1000 ? (v / 1000).toFixed(0) + 'k' : v }, splitLine: { show: false } },
-      ],
-      tooltip: { trigger: 'axis', formatter: p => {
-        const idx = p[0]?.dataIndex
-        if (idx === undefined) return ''
-        const m = topMats[idx]
-        return '<b>' + (m.title?.slice(0, 20) || m.material_id) + '</b><br/>' +
-          'CTR: <b>' + m.ctr + '%</b><br/>' +
-          '消耗: ¥' + m.cost.toLocaleString() + '<br/>' +
-          '曝光: ' + (parseInt(m.show_cnt) || 0).toLocaleString()
-      }},
-      series: [
-        { name: 'CTR', type: 'bar', data: topMats.map((m, i) => ({ value: m.ctr, itemStyle: { color: colors[i % colors.length], borderRadius: [4, 4, 0, 0] } })), barWidth: '40%', label: { show: true, position: 'top', fontSize: 10, formatter: p => p.value + '%' } },
-        { name: '消耗', type: 'line', yAxisIndex: 1, data: topMats.map(m => m.cost), smooth: true, lineStyle: { width: 2, color: '#FA8C16' }, itemStyle: { color: '#FA8C16' }, symbol: 'circle', symbolSize: 6 },
-      ]
-    })
-  }
-
-  // 各账户CTR对比（横向柱图）
-  if (r3.code === 0 && accCompareRef.value) {
-    if (accCompareChart) accCompareChart.dispose()
-    accCompareChart = echarts.init(accCompareRef.value)
-    const accs = r3.data.accounts || []
-    const accData = accs.map(a => {
-      const parts = a.name.replace(/\(.*?\)/g, '').split('-').filter(Boolean)
-      const last = parts[parts.length - 1] || a.name
-      const label = (last.length > 6 ? last.slice(0, 6) : last) + '-' + String(a.id).slice(-4)
-      const latestCtr = a.data?.length ? a.data[a.data.length - 1].ctr : 0
-      return { name: label, ctr: latestCtr }
-    }).sort((a, b) => a.ctr - b.ctr)
-    const barColors = ['#FF4D4F', '#FA8C16', '#FADB14', '#52C41A', '#1677FF', '#722ED1', '#EB2F96', '#13C2C2', '#2F54EB', '#A0D911']
-    const chartH = Math.max(300, accData.length * 36 + 60)
-    accCompareRef.value.style.height = chartH + 'px'
-    accCompareChart.resize()
-    accCompareChart.setOption({
-      grid: { left: 120, right: 60, top: 10, bottom: 20 },
-      xAxis: { type: 'value', axisLabel: { fontSize: 10, color: '#888', formatter: v => v + '%' }, splitLine: { lineStyle: { type: 'dashed', color: '#f0f0f0' } } },
-      yAxis: { type: 'category', data: accData.map(a => a.name), axisLabel: { fontSize: 11, color: '#333', width: 110, overflow: 'truncate' } },
-      tooltip: { trigger: 'axis', formatter: p => p[0] ? p[0].name + ': <b>' + p[0].value + '%</b>' : '' },
-      series: [{
-        type: 'bar',
-        data: accData.map((a, i) => ({ value: a.ctr, itemStyle: { color: barColors[i % barColors.length], borderRadius: [0, 4, 4, 0] } })),
-        barWidth: '55%',
-        label: { show: true, position: 'right', fontSize: 11, fontWeight: 'bold', formatter: p => p.value + '%' }
-      }]
-    })
-  }
 }
 
 onMounted(loadAll)
@@ -349,6 +289,7 @@ onMounted(loadAll)
 <style scoped>
 .ctr-page { padding: 20px; max-width: 1400px; margin: 0 auto; }
 .ctr-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+.ctr-filters { display: flex; align-items: center; gap: 12px; }
 .ctr-header h2 { margin: 0; font-size: 20px; display: flex; align-items: baseline; gap: 10px; }
 .header-note { font-size: 12px; color: #999; font-weight: 400; }
 .ctr-cards { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 20px; }
@@ -402,6 +343,7 @@ onMounted(loadAll)
 .nms-label { font-size: 11px; color: #999; }
 .nms-val { font-size: 18px; font-weight: 700; color: #333; }
 .nms-val.blue { color: #1677FF; }
+.empty-hint { text-align: center; padding: 30px 0; color: #bbb; font-size: 13px; }
 @media (max-width: 768px) {
   .ctr-cards { grid-template-columns: repeat(2, 1fr); }
   .ctr-row { flex-direction: column; }

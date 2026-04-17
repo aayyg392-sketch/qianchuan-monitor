@@ -134,7 +134,7 @@ import request from '@/utils/request';
 import * as echarts from 'echarts';
 
 const loading = ref(false);
-const range = ref('7');
+const range = ref('today');
 const rangeTabs = [
   { label: '今天', value: 'today' },
   { label: '昨天', value: 'yesterday' },

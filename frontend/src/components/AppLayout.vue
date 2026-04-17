@@ -158,7 +158,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../store/auth'
 import { message } from 'ant-design-vue'
@@ -248,7 +248,6 @@ const operationIcon = `<svg width="18" height="18" viewBox="0 0 24 24" fill="non
 const liveIcon = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49"/><path d="M7.76 16.24a6 6 0 0 1 0-8.49"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>`
 
 const systemIcon = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`
-const tiktokIcon = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12a4 4 0 1 0 4 4V4a5 5 0 0 0 5 5"/></svg>`
 
 const openSubMenus = ref({})
 const toggleSubMenu = (path) => { openSubMenus.value[path] = !openSubMenus.value[path] }
@@ -270,12 +269,11 @@ const _allNavItems = [
     { path: '/material-audit', label: '素材审核' },
     { path: '/super5s', label: '超级5秒镜头' },
     { path: '/ai-text2video', label: 'AI文生视频' },
-    { path: '/material-dimensions', label: '内容人员' },
     { path: '/ctr-analysis', label: 'CTR素材分析' },
+    { path: '/material-dimensions', label: '内容人员' },
   ]},
   { path: '/campaigns', label: '账户管理', icon: campaignIcon, children: [
     { path: '/campaigns', label: '账户列表' },
-    { path: '/ai-trader', label: 'AI金牌投手' },
     { path: '/premium-materials', label: '优质素材' },
   ]},
   { path: '/audience', label: '达人管理', icon: influencerIcon, children: [
@@ -295,6 +293,7 @@ const _allNavItems = [
   { path: '/wx-ops', label: '视频号运营中心', icon: operationIcon, children: [
     { path: '/wx-ops-workbench', label: '运营工作台' },
     { path: '/wx-finder-list', label: '达人管理' },
+    { path: '/adq-dashboard', label: 'ADQ账户管理' },
   ]},
   { path: '/ks-ops', label: '快手运营中心', icon: operationIcon, children: [
     { path: '/ks-workbench', label: '运营工作台' },
@@ -303,12 +302,8 @@ const _allNavItems = [
     { path: '/ks-ad-pitcher', label: 'AI金牌投手' },
     { path: '/ks-reviews', label: '评价管理' },
   ]},
-  { path: '/tt-ops', label: '跨境TIKTOK', icon: tiktokIcon, children: [
-    { path: '/tt-dashboard', label: '跨境驾驶舱' },
-    { path: '/tt-materials', label: '素材管理' },
-    { path: '/tt-push', label: '素材推送' },
-    { path: '/tt-stats', label: '素材消耗' },
-    { path: '/tt-accounts', label: 'TikTok账户' },
+  { path: '/tiktok-ops', label: 'TikTok运营中心', icon: operationIcon, children: [
+    { path: '/tiktok-dashboard', label: '账户管理' },
   ]},
   { path: '/system', label: '系统管理', icon: systemIcon, children: [
     { path: '/user-manage', code: '/accounts', label: '用户管理' },
@@ -320,33 +315,25 @@ const _allNavItems = [
   { path: '/alerts', label: '告警中心', icon: bellIcon, badge: true },
 ]
 
-// 跨境TikTok - 移动端菜单项（追加）
-const _ttMobileItems = [
-  { path: '/tt-dashboard', label: '跨境驾驶舱', icon: tiktokIcon },
-  { path: '/tt-materials', label: 'TikTok素材', icon: tiktokIcon },
-  { path: '/tt-push', label: '素材推送', icon: tiktokIcon },
-  { path: '/tt-stats', label: '素材消耗', icon: tiktokIcon },
-  { path: '/tt-accounts', label: 'TikTok账户', icon: tiktokIcon },
-]
-
-// 默认只展开当前路由所在的父菜单
-;(() => {
-  const cur = route.path
-  for (const item of _allNavItems) {
-    if (item.children && item.children.some(c => cur === c.path || cur.startsWith(c.path + '/'))) {
-      openSubMenus.value[item.path] = true
-    }
-  }
-})()
-
 // 权限过滤：根据用户权限过滤菜单
 const canAccess = (code) => {
-  // 跨境TikTok模块：所有登录用户可见
-  if (code && (code.startsWith('/tt-') || code === '/tt-ops')) return true
   const perms = auth.permissions
   if (perms.is_super_admin || (perms.menus && perms.menus.includes('*'))) return true
   return perms.menus && perms.menus.includes(code)
 }
+// 自动展开当前路由所在的菜单组
+function autoExpandCurrentMenu() {
+  const cur = route.path
+  for (const item of _allNavItems) {
+    if (item.children && item.children.some(ch => ch.path === cur)) {
+      openSubMenus.value[item.path] = true
+      break
+    }
+  }
+}
+autoExpandCurrentMenu()
+watch(() => route.path, () => autoExpandCurrentMenu())
+
 const navItems = computed(() => {
   return _allNavItems.map(item => {
     const menuCode = item.code || item.path
@@ -371,8 +358,8 @@ const _mobileNavItems = [
   { path: '/super5s', label: '超级5秒镜头', icon: materialIcon },
   { path: '/ai-text2video', label: 'AI文生视频', icon: materialIcon },
   { path: '/campaigns', label: '账户列表', icon: campaignIcon },
-  { path: '/ai-trader', label: 'AI金牌投手', icon: campaignIcon },
   { path: '/premium-materials', label: '优质素材', icon: campaignIcon },
+  { path: '/ctr-analysis', label: 'CTR素材分析', icon: materialIcon },
   { path: '/material-dimensions', label: '内容人员', icon: materialIcon },
   { path: '/audience-profile', label: '产品人群画像', icon: influencerIcon },
   { path: '/influencer-match', label: '达人合作筛选', icon: influencerIcon },
@@ -383,6 +370,7 @@ const _mobileNavItems = [
   { path: '/ops-comments', label: '评论管理', icon: operationIcon },
   { path: '/wx-ops-workbench', label: '视频号工作台', icon: operationIcon },
   { path: '/wx-finder-list', label: '视频号达人', icon: operationIcon },
+  { path: '/adq-dashboard', label: 'ADQ账户管理', icon: operationIcon },
   { path: '/ks-workbench', label: '快手工作台', icon: operationIcon },
   { path: '/ks-live-analytics', label: '快手直播联动', icon: operationIcon },
   { path: '/ks-reviews', label: '快手评价管理', icon: operationIcon },
@@ -395,7 +383,7 @@ const _mobileNavItems = [
 ]
 // 移动端菜单也按RBAC过滤
 const allNavItems = computed(() => {
-  return [..._mobileNavItems, ..._ttMobileItems].filter(item => canAccess(item.path))
+  return _mobileNavItems.filter(item => canAccess(item.path))
 })
 const _tabItemsDef = [
   { path: '/', label: '数据概览', shortLabel: '概览', icon: homeIcon },
@@ -415,14 +403,14 @@ const pageMap = {
   '/ai-text2video': 'AI文生视频', '/industry-hotspot': '行业热点', '/industry-videos': '内容榜单', '/competitor-videos': '竞品爆款视频',
   '/ops-workbench': '运营工作台', '/ops-comments': '评论管理',
   '/wx-ops-workbench': '视频号运营工作台', '/wx-finder-list': '达人管理',
+  '/adq-dashboard': 'ADQ账户管理',
   '/ks-workbench': '快手运营工作台', '/ks-live-analytics': '直播电商联动',
   '/ks-reviews': '评价管理',
   '/live-monitor': '实时监控', '/live-comments': '智能评论', '/live-analytics': '分时数据',
   '/live-speech': '话术抓取', '/live-replay': '主播复盘',
   '/anchor-schedule': '主播排班', '/anchor-stats': '主播数据',
   '/ai-trader': 'AI金牌投手',
-  '/reports': '数据分析', '/alerts': '告警中心', '/user-manage': '用户管理', '/accounts': '账户列表', '/role-manage': '角色管理', '/operation-logs': '操作日志', '/settings': '系统设置',
-  '/tt-dashboard': '跨境驾驶舱', '/tt-materials': '素材管理', '/tt-push': '素材推送', '/tt-stats': '素材消耗', '/tt-accounts': 'TikTok账户'
+  '/reports': '数据分析', '/alerts': '告警中心', '/user-manage': '用户管理', '/accounts': '账户列表', '/role-manage': '角色管理', '/operation-logs': '操作日志', '/settings': '系统设置'
 }
 const currentTitle = computed(() => {
   if (route.path.includes('/remix')) return 'AI翻剪推荐'
@@ -437,7 +425,6 @@ const isActive = (path) => {
   if (path === '/industry') return route.path.startsWith('/industry')
   if (path === '/operations') return route.path.startsWith('/ops-')
   if (path === '/ks-ops') return route.path.startsWith('/ks-')
-  if (path === '/tt-ops') return route.path.startsWith('/tt-')
   if (path === '/system') return route.path === '/user-manage' || route.path === '/role-manage' || route.path === '/operation-logs' || route.path === '/settings'
   return route.path.startsWith(path)
 }

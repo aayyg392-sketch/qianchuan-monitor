@@ -744,6 +744,12 @@ async function runAutoReply() {
  */
 async function autoHideNegative() {
   try {
+    // 检查AI自动过滤差评是否启用
+    const [cfgCheck] = await db.query('SELECT auto_hide_enabled FROM ops_ai_reply_config ORDER BY id LIMIT 1');
+    if (!cfgCheck?.length || cfgCheck[0].auto_hide_enabled !== 1) {
+      return { hidden: 0 };
+    }
+
     // 查找未隐藏的差评
     const [negatives] = await db.query(
       `SELECT id, original_comment_id FROM ops_comment_logs WHERE ai_category = 'negative' AND status = 'pending'`
@@ -785,6 +791,12 @@ async function autoHideNegative() {
  */
 async function autoReplyOverdue() {
   try {
+    // 检查AI自动回复是否启用
+    const [cfgCheck] = await db.query('SELECT enabled FROM ops_ai_reply_config ORDER BY id LIMIT 1');
+    if (!cfgCheck?.length || cfgCheck[0].enabled !== 1) {
+      return { replied: 0 };
+    }
+
     const eightHoursAgo = dayjs().subtract(8, 'hour').format('YYYY-MM-DD HH:mm:ss');
 
     // 查找超8小时未回复的非差评评论（差评已隐藏不需要回复）

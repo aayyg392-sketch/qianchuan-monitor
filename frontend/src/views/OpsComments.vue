@@ -213,6 +213,26 @@
             </div>
           </div>
 
+          <!-- Auto Hide Config -->
+          <div class="config-card" style="margin-top:16px">
+            <div class="config-card__header">
+              <span class="config-card__title">AI自动过滤差评</span>
+              <a-switch
+                v-model:checked="aiConfig.auto_hide_enabled"
+              />
+            </div>
+            <div class="config-card__body">
+              <div class="config-row">
+                <span class="config-value" style="color:#8c8c8c">开启后自动隐藏差评评论，每15分钟检测一次</span>
+              </div>
+              <div class="config-row config-row--action">
+                <a-button type="primary" :loading="configSaving" @click="saveAiConfig">
+                  保存配置
+                </a-button>
+              </div>
+            </div>
+          </div>
+
           <!-- AI Reply Feed -->
           <div class="feed-section">
             <div class="feed-section__header">
@@ -592,6 +612,7 @@ async function operateComment(commentId, action) {
 // ===== Tab 2: AI Auto Reply =====
 const aiConfig = reactive({
   enabled: false,
+  auto_hide_enabled: false,
   categories: ['positive', 'inquiry'],
   reply_style: 'friendly',
 })
@@ -603,8 +624,10 @@ async function loadAiConfig() {
   try {
     const res = await request.get('/operations/ai-reply/config')
     const d = res.data || {}
-    aiConfig.enabled = d.enabled ?? false
-    aiConfig.categories = d.categories || ['positive', 'inquiry']
+    aiConfig.enabled = !!d.enabled
+    aiConfig.auto_hide_enabled = !!d.auto_hide_enabled
+    aiConfig.categories = d.auto_reply_categories || d.categories || ['positive', 'inquiry']
+    if (typeof aiConfig.categories === 'string') { try { aiConfig.categories = JSON.parse(aiConfig.categories); } catch {} }
     aiConfig.reply_style = d.reply_style || 'friendly'
   } catch (e) {
     console.error('Failed to load AI config:', e)
@@ -616,7 +639,8 @@ async function saveAiConfig() {
   try {
     await request.put('/operations/ai-reply/config', {
       enabled: aiConfig.enabled,
-      categories: aiConfig.categories,
+      auto_hide_enabled: aiConfig.auto_hide_enabled,
+      auto_reply_categories: aiConfig.categories,
       reply_style: aiConfig.reply_style,
     })
     message.success('配置已保存')

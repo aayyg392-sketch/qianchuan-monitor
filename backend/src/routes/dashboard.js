@@ -28,15 +28,19 @@ router.get('/overview', auth(), async (req, res) => {
   const trendEnd = dayjs().format('YYYY-MM-DD');
 
   try {
+    // RBAC账户过滤
+    const aw = req.accWhere || '';
+    const ap = req.accParams || [];
+
     // 聚合函数：查指定日期范围的汇总
     const queryStats = async (start, end) => {
       const [[stats]] = await db.query(
         `SELECT SUM(cost) AS cost, SUM(convert_cnt) AS convert_cnt, SUM(cpm) AS gmv
-         FROM qc_daily_stats WHERE stat_date BETWEEN ? AND ? AND entity_type = 'campaign'`, [start, end]
+         FROM qc_daily_stats WHERE stat_date BETWEEN ? AND ? AND entity_type = 'campaign'${aw}`, [start, end, ...ap]
       );
       const [[mat]] = await db.query(
         `SELECT SUM(show_cnt) AS show_cnt, SUM(click_cnt) AS click_cnt, SUM(cost) AS material_cost
-         FROM qc_material_stats WHERE stat_date BETWEEN ? AND ?`, [start, end]
+         FROM qc_material_stats WHERE stat_date BETWEEN ? AND ?${aw}`, [start, end, ...ap]
       );
       const cost = parseFloat(stats.cost) || 0;
       const gmv = parseFloat(stats.gmv) || 0;
@@ -61,28 +65,32 @@ router.get('/overview', auth(), async (req, res) => {
     let compareType = 'full_day';
     if (period === 'today') {
       const currentHour = dayjs().hour();
-      // 尝试从快照表获取昨日同时段数据
-      const [[snapshot]] = await db.query(
-        `SELECT cost, gmv, show_cnt, click_cnt, convert_cnt
-         FROM qc_stats_snapshots WHERE stat_date = ? AND snap_hour <= ? ORDER BY snap_hour DESC LIMIT 1`,
-        [prevStart, currentHour]
-      );
-      if (snapshot && snapshot.cost > 0) {
-        const cost = parseFloat(snapshot.cost) || 0;
-        const gmv = parseFloat(snapshot.gmv) || 0;
-        const show = parseInt(snapshot.show_cnt) || 0;
-        const click = parseInt(snapshot.click_cnt) || 0;
-        const convert = parseInt(snapshot.convert_cnt) || 0;
-        prevData = {
-          cost, gmv, show_cnt: show, click_cnt: click, convert_cnt: convert,
-          material_cost: cost,
-          roi: cost > 0 ? gmv / cost : 0,
-          ctr: show > 0 ? click / show : 0,
-          avg_cvr: click > 0 ? convert / click : 0,
-          avg_convert_cost: convert > 0 ? cost / convert : 0
-        };
-        compareType = 'same_hour';
-      } else {
+      // 快照表无advertiser_id，仅超管可用快照对比
+      const isSuperAdmin = !aw;
+      if (isSuperAdmin) {
+        const [[snapshot]] = await db.query(
+          `SELECT cost, gmv, show_cnt, click_cnt, convert_cnt
+           FROM qc_stats_snapshots WHERE stat_date = ? AND snap_hour <= ? ORDER BY snap_hour DESC LIMIT 1`,
+          [prevStart, currentHour]
+        );
+        if (snapshot && snapshot.cost > 0) {
+          const cost = parseFloat(snapshot.cost) || 0;
+          const gmv = parseFloat(snapshot.gmv) || 0;
+          const show = parseInt(snapshot.show_cnt) || 0;
+          const click = parseInt(snapshot.click_cnt) || 0;
+          const convert = parseInt(snapshot.convert_cnt) || 0;
+          prevData = {
+            cost, gmv, show_cnt: show, click_cnt: click, convert_cnt: convert,
+            material_cost: cost,
+            roi: cost > 0 ? gmv / cost : 0,
+            ctr: show > 0 ? click / show : 0,
+            avg_cvr: click > 0 ? convert / click : 0,
+            avg_convert_cost: convert > 0 ? cost / convert : 0
+          };
+          compareType = 'same_hour';
+        }
+      }
+      if (!prevData) {
         prevData = await queryStats(prevStart, prevEnd);
       }
     } else {
@@ -93,11 +101,12 @@ router.get('/overview', auth(), async (req, res) => {
     const [trendRows] = await db.query(
       `SELECT DATE_FORMAT(stat_date, '%Y-%m-%d') AS stat_date, SUM(cost) AS cost
        FROM qc_daily_stats
-       WHERE stat_date BETWEEN ? AND ? AND entity_type = 'campaign'
-       GROUP BY stat_date ORDER BY stat_date`, [trendStart, trendEnd]
+       WHERE stat_date BETWEEN ? AND ? AND entity_type = 'campaign'${aw}
+       GROUP BY stat_date ORDER BY stat_date`, [trendStart, trendEnd, ...ap]
     );
 
-    // 账户表现（当期范围）
+    // 账户表现（当期范围）— RBAC过滤
+    const accWhereA = aw ? aw.replace('advertiser_id', 'a.advertiser_id') : '';
     const [accountRows] = await db.query(
       `SELECT a.advertiser_id, a.advertiser_name,
         COALESCE(d.cost, 0) AS today_cost,
@@ -118,8 +127,8 @@ router.get('/overview', auth(), async (req, res) => {
          FROM qc_material_stats WHERE stat_date BETWEEN ? AND ?
          GROUP BY advertiser_id
        ) m ON a.advertiser_id = m.advertiser_id
-       WHERE a.status = 1
-       ORDER BY COALESCE(d.cost, 0) DESC`, [curStart, curEnd, curStart, curEnd]
+       WHERE a.status = 1${accWhereA}
+       ORDER BY COALESCE(d.cost, 0) DESC`, [curStart, curEnd, curStart, curEnd, ...ap]
     );
 
     // 获取最后同步时间
@@ -151,16 +160,18 @@ router.get('/overview', auth(), async (req, res) => {
 router.get('/realtime', auth(), async (req, res) => {
   const today = dayjs().format('YYYY-MM-DD');
   const yesterday = dayjs().subtract(1, 'day').format('YYYY-MM-DD');
+  const aw = req.accWhere || '';
+  const ap = req.accParams || [];
   try {
-    // 今日 TOP 10 + 最后同步时间
+    // 今日 TOP 10 + 最后同步时间 — RBAC过滤
     const [rows] = await db.query(
       `SELECT material_id AS entity_id, title AS entity_name,
         cost, ctr / 100 AS ctr, pay_order_count AS convert_cnt,
         pay_order_amount AS gmv, show_cnt, click_cnt,
         DATE_FORMAT(updated_at, '%H:%i') AS sync_time
        FROM qc_material_stats
-       WHERE stat_date = ? AND cost > 0
-       ORDER BY cost DESC LIMIT 10`, [today]
+       WHERE stat_date = ? AND cost > 0${aw}
+       ORDER BY cost DESC LIMIT 10`, [today, ...ap]
     );
 
     // 昨日完整数据：排名 + 消耗
@@ -170,8 +181,8 @@ router.get('/realtime', auth(), async (req, res) => {
         pay_order_amount AS yesterday_gmv,
         @rank := @rank + 1 AS rank_pos
        FROM qc_material_stats, (SELECT @rank := 0) r
-       WHERE stat_date = ? AND cost > 0
-       ORDER BY cost DESC`, [yesterday]
+       WHERE stat_date = ? AND cost > 0${aw}
+       ORDER BY cost DESC`, [yesterday, ...ap]
     );
     const yesterdayMap = {};
     yesterdayRows.forEach(r => {
@@ -186,7 +197,7 @@ router.get('/realtime', auth(), async (req, res) => {
     // 获取最后同步时间
     const [[syncInfo]] = await db.query(
       `SELECT DATE_FORMAT(MAX(updated_at), '%Y-%m-%d %H:%i') AS last_sync
-       FROM qc_material_stats WHERE stat_date = ?`, [today]
+       FROM qc_material_stats WHERE stat_date = ?${aw}`, [today, ...ap]
     );
 
     // 计算排名变化 + 附带昨日数据
@@ -222,14 +233,16 @@ router.get('/realtime', auth(), async (req, res) => {
 router.get('/material-trend', auth(), async (req, res) => {
   const today = dayjs().format('YYYY-MM-DD');
   const weekStart = dayjs().subtract(6, 'day').format('YYYY-MM-DD');
+  const aw = req.accWhere || '';
+  const ap = req.accParams || [];
   try {
     const [rows] = await db.query(
       `SELECT DATE_FORMAT(stat_date, '%Y-%m-%d') AS date,
         SUM(cost) AS cost, SUM(pay_order_count) AS orders, SUM(pay_order_amount) AS gmv,
         CASE WHEN SUM(cost) > 0 THEN SUM(pay_order_amount) / SUM(cost) ELSE 0 END AS roi
        FROM qc_material_stats
-       WHERE stat_date BETWEEN ? AND ? AND cost > 0
-       GROUP BY stat_date ORDER BY stat_date`, [weekStart, today]
+       WHERE stat_date BETWEEN ? AND ? AND cost > 0${aw}
+       GROUP BY stat_date ORDER BY stat_date`, [weekStart, today, ...ap]
     );
     res.json({ code: 0, data: { trend: rows } });
   } catch (e) {
@@ -242,16 +255,18 @@ router.get('/material-trend', auth(), async (req, res) => {
 router.get('/potential-materials', auth(), async (req, res) => {
   const today = dayjs().format('YYYY-MM-DD');
   const weekStart = dayjs().subtract(6, 'day').format('YYYY-MM-DD');
+  const aw = req.accWhere || '';
+  const ap = req.accParams || [];
   try {
     const [rows] = await db.query(
       `SELECT material_id, MAX(title) AS title, SUM(cost) AS cost,
         CASE WHEN SUM(cost) > 0 THEN SUM(pay_order_amount) / SUM(cost) ELSE 0 END AS roi,
         SUM(pay_order_count) AS orders
        FROM qc_material_stats
-       WHERE stat_date BETWEEN ? AND ? AND cost > 0
+       WHERE stat_date BETWEEN ? AND ? AND cost > 0${aw}
        GROUP BY material_id
        HAVING roi >= 2 AND cost < 500
-       ORDER BY roi DESC LIMIT 10`, [weekStart, today]
+       ORDER BY roi DESC LIMIT 10`, [weekStart, today, ...ap]
     );
     res.json({ code: 0, data: { list: rows } });
   } catch (e) {
@@ -265,17 +280,17 @@ router.get('/product-trend', auth(), async (req, res) => {
   const { entityType = 'campaign', topN = 5 } = req.query;
   const endDate = dayjs().format('YYYY-MM-DD');
   const startDate = dayjs().subtract(6, 'day').format('YYYY-MM-DD');
+  const aw = req.accWhere || '';
+  const ap = req.accParams || [];
 
   try {
     if (entityType === 'creative') {
-      // 按素材维度：从 qc_material_stats
-      // 先找 TOP N 素材（按总消耗）
       const [topEntities] = await db.query(
         `SELECT material_id AS entity_id, MAX(title) AS entity_name, SUM(cost) AS total_cost
          FROM qc_material_stats
-         WHERE stat_date BETWEEN ? AND ? AND cost > 0
+         WHERE stat_date BETWEEN ? AND ? AND cost > 0${aw}
          GROUP BY material_id ORDER BY total_cost DESC LIMIT ?`,
-        [startDate, endDate, parseInt(topN)]
+        [startDate, endDate, ...ap, parseInt(topN)]
       );
 
       if (!topEntities.length) {
@@ -325,9 +340,9 @@ router.get('/product-trend', auth(), async (req, res) => {
     const [topEntities] = await db.query(
       `SELECT entity_id, MAX(entity_name) AS entity_name, SUM(cost) AS total_cost
        FROM qc_daily_stats
-       WHERE stat_date BETWEEN ? AND ? AND entity_type = 'campaign' AND cost > 0
+       WHERE stat_date BETWEEN ? AND ? AND entity_type = 'campaign' AND cost > 0${aw}
        GROUP BY entity_id ORDER BY total_cost DESC LIMIT ?`,
-      [startDate, endDate, parseInt(topN)]
+      [startDate, endDate, ...ap, parseInt(topN)]
     );
 
     if (!topEntities.length) {
@@ -459,6 +474,8 @@ router.post('/analyze-metric', auth(), async (req, res) => {
   const startDate = dayjs().subtract(6, 'day').format('YYYY-MM-DD');
   const yesterday = dayjs().subtract(1, 'day').format('YYYY-MM-DD');
 
+  const aw3 = req.accWhere || '';
+  const ap3 = req.accParams || [];
   try {
     // 1. 7天趋势数据
     const [trendRows] = await db.query(
@@ -466,8 +483,8 @@ router.post('/analyze-metric', auth(), async (req, res) => {
         SUM(cost) AS cost, SUM(cpm) AS gmv, SUM(convert_cnt) AS convert_cnt,
         SUM(show_cnt) AS show_cnt, SUM(click_cnt) AS click_cnt
        FROM qc_daily_stats
-       WHERE stat_date BETWEEN ? AND ? AND entity_type = 'campaign'
-       GROUP BY stat_date ORDER BY stat_date`, [startDate, endDate]
+       WHERE stat_date BETWEEN ? AND ? AND entity_type = 'campaign'${aw3}
+       GROUP BY stat_date ORDER BY stat_date`, [startDate, endDate, ...ap3]
     );
 
     // 素材维度补充 show/click
@@ -476,8 +493,8 @@ router.post('/analyze-metric', auth(), async (req, res) => {
         SUM(show_cnt) AS m_show, SUM(click_cnt) AS m_click, SUM(pay_order_count) AS m_orders,
         SUM(pay_order_amount) AS m_gmv
        FROM qc_material_stats
-       WHERE stat_date BETWEEN ? AND ?
-       GROUP BY stat_date ORDER BY stat_date`, [startDate, endDate]
+       WHERE stat_date BETWEEN ? AND ?${aw3}
+       GROUP BY stat_date ORDER BY stat_date`, [startDate, endDate, ...ap3]
     );
     const matMap = {};
     matTrend.forEach(r => { matMap[r.date] = r; });
@@ -522,7 +539,10 @@ router.post('/analyze-metric', auth(), async (req, res) => {
       yesterday: [tYesterday.cost, tYesterday.show_cnt, tYesterday.click_cnt, tYesterday.convert_cnt, tYesterday.gmv],
     };
 
-    // 3. 各账户该指标对比
+    // 3. 各账户该指标对比 — RBAC过滤
+    const aw2 = req.accWhere || '';
+    const ap2 = req.accParams || [];
+    const accWhereA2 = aw2 ? aw2.replace('advertiser_id', 'a.advertiser_id') : '';
     const [accRows] = await db.query(
       `SELECT a.advertiser_name AS name, a.advertiser_id,
         COALESCE(SUM(d.cost), 0) AS cost, COALESCE(SUM(d.cpm), 0) AS gmv,
@@ -536,9 +556,9 @@ router.post('/analyze-metric', auth(), async (req, res) => {
          FROM qc_material_stats WHERE stat_date = ?
          GROUP BY advertiser_id
        ) m ON a.advertiser_id = m.advertiser_id
-       WHERE a.status = 1
+       WHERE a.status = 1${accWhereA2}
        GROUP BY a.advertiser_id, a.advertiser_name, m.show_cnt, m.click_cnt
-       ORDER BY COALESCE(SUM(d.cost), 0) DESC`, [endDate, endDate]
+       ORDER BY COALESCE(SUM(d.cost), 0) DESC`, [endDate, endDate, ...ap2]
     );
 
     const breakdown = accRows.filter(r => parseFloat(r.cost) > 0).map(r => {
@@ -566,6 +586,206 @@ router.post('/analyze-metric', auth(), async (req, res) => {
     });
   } catch (e) {
     logger.error('[Dashboard] analyze-metric 失败', { error: e.message });
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// ===================== GET /channel-summary =====================
+// 各渠道数据汇总（千川/快手/视频号ADQ），带店铺维度
+// 支持角色过滤：按 req.rbac.ad_accounts 过滤各平台账户
+router.get('/channel-summary', auth(), async (req, res) => {
+  try {
+    const { period = 'today' } = req.query;
+    let startDate, endDate;
+    if (period === 'yesterday') {
+      startDate = endDate = dayjs().subtract(1, 'day').format('YYYY-MM-DD');
+    } else if (period === '7d') {
+      startDate = dayjs().subtract(6, 'day').format('YYYY-MM-DD');
+      endDate = dayjs().format('YYYY-MM-DD');
+    } else {
+      startDate = endDate = dayjs().format('YYYY-MM-DD');
+    }
+
+    const rbac = req.rbac || {};
+    const isSuper = !!rbac.is_super_admin;
+    const qcAcc = rbac.ad_accounts?.qianchuan || [];
+    const ksAcc = rbac.ad_accounts?.kuaishou || [];
+    const adqAcc = rbac.ad_accounts?.adq || [];
+
+    const channels = [];
+
+    // --------- 1. 抖音千川 ---------
+    // 口径：qc_daily_stats + entity_type='campaign'（与数据概览一致）
+    // 店铺识别：按 advertiser_name 关键字匹配
+    const qcAll = isSuper || qcAcc.includes('*');
+    const qcVisible = qcAll || qcAcc.length > 0;
+    if (qcVisible) {
+      const qcWhere = qcAll ? '' : ` AND d.advertiser_id IN (${qcAcc.map(() => '?').join(',')})`;
+      const qcParams = qcAll ? [] : [...qcAcc];
+      const [qcShops] = await db.query(
+        `SELECT
+           CASE
+             WHEN a.advertiser_name LIKE '%护肤旗舰店%' THEN '雪玲妃护肤旗舰店'
+             WHEN a.advertiser_name LIKE '%美妆旗舰店%' THEN '雪玲妃美妆旗舰店'
+             WHEN a.advertiser_name LIKE '%官方旗舰店%' THEN '雪玲妃官方旗舰店'
+             ELSE '其他账户'
+           END AS shop_name,
+           SUM(d.cost) AS cost,
+           SUM(d.cpm) AS gmv
+         FROM qc_daily_stats d
+         LEFT JOIN qc_accounts a ON d.advertiser_id = a.advertiser_id
+         WHERE d.stat_date BETWEEN ? AND ? AND d.entity_type='campaign'${qcWhere}
+         GROUP BY shop_name
+         HAVING cost > 0 OR gmv > 0
+         ORDER BY gmv DESC`,
+        [startDate, endDate, ...qcParams]
+      );
+      const shops = qcShops.map(x => {
+        const gmv = parseFloat(x.gmv) || 0;
+        const cost = parseFloat(x.cost) || 0;
+        return { name: x.shop_name, gmv, cost, roi: cost > 0 ? gmv / cost : 0 };
+      });
+      const totalGmv = shops.reduce((s, x) => s + x.gmv, 0);
+      const totalCost = shops.reduce((s, x) => s + x.cost, 0);
+      channels.push({
+        key: 'qc',
+        name: '抖音千川',
+        color: '#FF6A00',
+        total_gmv: totalGmv,
+        total_cost: totalCost,
+        roi: totalCost > 0 ? totalGmv / totalCost : 0,
+        shops
+      });
+    }
+
+    // --------- 2. 快手 ---------
+    // 以 ks_accounts（店铺表）为基础，展示所有店铺；即使当日 0 销售也保留展示
+    const ksAll = isSuper || ksAcc.includes('*');
+    const ksVisible = ksAll || ksAcc.length > 0;
+    if (ksVisible) {
+      // 1) 可见店铺列表
+      let shopList;
+      if (ksAll) {
+        const [rows] = await db.query(
+          `SELECT shop_id, shop_name FROM ks_accounts WHERE (status=1 OR status IS NULL) AND shop_id IS NOT NULL`
+        );
+        shopList = rows;
+      } else {
+        const [rows] = await db.query(
+          `SELECT DISTINCT a.shop_id, a.shop_name
+           FROM ks_ad_accounts a
+           WHERE a.advertiser_id IN (${ksAcc.map(() => '?').join(',')}) AND a.shop_id IS NOT NULL`,
+          [...ksAcc]
+        );
+        shopList = rows;
+      }
+      const shopIds = shopList.map(s => s.shop_id).filter(Boolean);
+
+      let gmvMap = {}, costMap = {};
+      if (shopIds.length) {
+        // 2) 店铺总销售（ks_daily_stats）
+        const [gmvRows] = await db.query(
+          `SELECT shop_id, SUM(gmv) AS gmv
+           FROM ks_daily_stats
+           WHERE stat_date BETWEEN ? AND ? AND shop_id IN (${shopIds.map(() => '?').join(',')})
+           GROUP BY shop_id`,
+          [startDate, endDate, ...shopIds]
+        );
+        gmvRows.forEach(r => { gmvMap[r.shop_id] = parseFloat(r.gmv) || 0; });
+
+        // 3) 店铺磁力消耗（ks_ad_daily_report × ks_ad_accounts）
+        const ksAdWhere = ksAll ? '' : ` AND r.advertiser_id IN (${ksAcc.map(() => '?').join(',')})`;
+        const ksAdParams = ksAll ? [] : [...ksAcc];
+        const [costRows] = await db.query(
+          `SELECT a.shop_id, SUM(r.cost) AS cost
+           FROM ks_ad_daily_report r
+           LEFT JOIN ks_ad_accounts a ON r.advertiser_id = a.advertiser_id
+           WHERE r.report_date BETWEEN ? AND ? AND a.shop_id IN (${shopIds.map(() => '?').join(',')})${ksAdWhere}
+           GROUP BY a.shop_id`,
+          [startDate, endDate, ...shopIds, ...ksAdParams]
+        );
+        costRows.forEach(r => { costMap[r.shop_id] = parseFloat(r.cost) || 0; });
+      }
+
+      const shops = shopList.map(s => {
+        const gmv = gmvMap[s.shop_id] || 0;
+        const cost = costMap[s.shop_id] || 0;
+        return { name: s.shop_name, gmv, cost, roi: cost > 0 ? gmv / cost : 0 };
+      }).sort((a, b) => b.gmv - a.gmv);
+
+      const totalGmv = shops.reduce((s, x) => s + x.gmv, 0);
+      const totalCost = shops.reduce((s, x) => s + x.cost, 0);
+      channels.push({
+        key: 'ks',
+        name: '快手',
+        color: '#FF4906',
+        total_gmv: totalGmv,
+        total_cost: totalCost,
+        roi: totalCost > 0 ? totalGmv / totalCost : 0,
+        shops
+      });
+    }
+
+    // --------- 3. 视频号小店 ---------
+    // 销售：wx_shop_orders 订单明细（order_price，与小店后台对齐）
+    // 消耗：adq_stats_snapshots.cost（视频号ADQ广告消耗，单位分）
+    const adqAll = isSuper || adqAcc.includes('*');
+    const adqVisible = adqAll || adqAcc.length > 0;
+    if (adqVisible) {
+      // 销售：从订单表按 pay_time 聚合
+      const [[wxGmvRow]] = await db.query(
+        `SELECT SUM(order_price)/100 AS gmv
+         FROM wx_shop_orders
+         WHERE DATE(pay_time) BETWEEN ? AND ?
+           AND status >= 20 AND status != 200`,
+        [startDate, endDate]
+      );
+      // 消耗：adq_stats_snapshots 每天每账户取最新 snap_hour
+      const adqCostWhere = adqAll ? '' : ` AND s.account_id IN (${adqAcc.map(() => '?').join(',')})`;
+      const adqCostParams = adqAll ? [] : [...adqAcc];
+      const [[wxCostRow]] = await db.query(
+        `SELECT SUM(s.cost)/100 AS cost FROM adq_stats_snapshots s
+         INNER JOIN (
+           SELECT stat_date, account_id, MAX(snap_hour) AS max_hour
+           FROM adq_stats_snapshots
+           WHERE stat_date BETWEEN ? AND ?
+           GROUP BY stat_date, account_id
+         ) m ON s.stat_date=m.stat_date AND s.account_id=m.account_id AND s.snap_hour=m.max_hour
+         WHERE s.stat_date BETWEEN ? AND ?${adqCostWhere}`,
+        [startDate, endDate, startDate, endDate, ...adqCostParams]
+      );
+      const shopGmv = parseFloat(wxGmvRow?.gmv) || 0;
+      const shopCost = parseFloat(wxCostRow?.cost) || 0;
+      const shops = (shopGmv > 0 || shopCost > 0) ? [{
+        name: '雪玲妃视频号小店',
+        gmv: shopGmv,
+        cost: shopCost,
+        roi: shopCost > 0 ? shopGmv / shopCost : 0
+      }] : [];
+      channels.push({
+        key: 'wx',
+        name: '视频号',
+        color: '#07C160',
+        total_gmv: shopGmv,
+        total_cost: shopCost,
+        roi: shopCost > 0 ? shopGmv / shopCost : 0,
+        shops
+      });
+    }
+
+    res.json({
+      code: 0,
+      data: {
+        period,
+        start_date: startDate,
+        end_date: endDate,
+        channels,
+        total_gmv: channels.reduce((s, c) => s + c.total_gmv, 0),
+        total_cost: channels.reduce((s, c) => s + c.total_cost, 0)
+      }
+    });
+  } catch (e) {
+    logger.error('[Dashboard] channel-summary 失败', { error: e.message });
     res.json({ code: 500, msg: e.message });
   }
 });

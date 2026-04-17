@@ -218,7 +218,7 @@ function startCron() {
     }
   });
 
-  // 每10分钟同步今日订单数据
+  // 每10分钟同步今日订单数据（旧罗盘口径，保留做小时趋势图）
   cron.schedule('*/10 * * * *', async () => {
     try {
       const { syncTodayOrders } = require('../routes/wx-compass');
@@ -228,12 +228,33 @@ function startCron() {
     }
   });
 
+  // 每10分钟同步视频号小店订单明细（增量，update_time近70分钟）
+  cron.schedule('3,13,23,33,43,53 * * * *', async () => {
+    try {
+      const { syncRecentUpdates } = require('../services/wx-shop-order-sync');
+      await syncRecentUpdates(70);
+    } catch (e) {
+      logger.error('[Cron] 视频号订单明细增量同步失败', { error: e.message });
+    }
+  });
+
+  // 每日凌晨2点回补近3天订单明细（捕捉延迟状态变更）
+  cron.schedule('0 2 * * *', async () => {
+    try {
+      const { backfillDays } = require('../services/wx-shop-order-sync');
+      await backfillDays(3);
+      logger.info('[Cron] 视频号订单明细回补完成');
+    } catch (e) {
+      logger.error('[Cron] 视频号订单明细回补失败', { error: e.message });
+    }
+  });
+
   // 每2小时同步视频号罗盘数据到数据库
   cron.schedule('13 */2 * * *', async () => {
     logger.info('[Cron] 开始同步视频号罗盘数据');
     try {
       const { syncCompassData } = require('../routes/wx-compass');
-      await syncCompassData(3); // 同步最近3天（昨天数据可能有更新）
+      await syncCompassData(3);
       logger.info('[Cron] 视频号罗盘数据同步完成');
     } catch (e) {
       logger.error('[Cron] 视频号罗盘数据同步失败', { error: e.message });
@@ -358,6 +379,95 @@ function startCron() {
     }
   });
 
+  // 快手磁力广告评论 - 每15分钟自动同步并AI回复
+  cron.schedule('2,17,32,47 * * * *', async () => {
+    try {
+      const ksAdComments = require('../routes/ks-ad-comments');
+      const [settings] = await db.query('SELECT * FROM ks_ad_comment_settings WHERE ai_reply_enabled = 1');
+      if (!settings.length) return;
+      for (const s of settings) {
+        try {
+          await ksAdComments.runAutoReply(s.shop_id);
+        } catch (e) { logger.warn(`[Cron] 磁力评论回复 shop=${s.shop_id}: ${e.message}`); }
+      }
+      logger.info(`[Cron] 磁力评论自动同步/回复完成: ${settings.length}个店铺`);
+    } catch (e) { logger.error('[Cron] 磁力评论定时任务失败', { error: e.message }); }
+  });
+
+  // ===== ADQ(腾讯广告)数据定时同步 - 每10分钟 =====
+  cron.schedule('*/10 * * * *', async () => {
+    try {
+      const adq = require('../services/adq-sync');
+      const [accounts] = await db.query('SELECT id, account_id FROM adq_accounts WHERE status=1 AND access_token IS NOT NULL');
+      if (!accounts.length) return;
+
+      const token = await adq.getValidToken(accounts[0].id);
+      const now = new Date();
+      const today = now.toISOString().slice(0, 10);
+      const hour = now.getHours();
+      const fields = ['date', 'cost', 'view_count', 'valid_click_count', 'ctr', 'cpc', 'conversions_count', 'conversions_cost', 'order_amount', 'order_roi'];
+
+      let synced = 0;
+      const BATCH = 10;
+      for (let i = 0; i < accounts.length; i += BATCH) {
+        const batch = accounts.slice(i, i + BATCH);
+        await Promise.all(batch.map(async (acct) => {
+          try {
+            const data = await adq.getDailyReports(token, acct.account_id, {
+              level: 'REPORT_LEVEL_ADVERTISER',
+              date_range: { start_date: today, end_date: today },
+              fields,
+            });
+            const row = data?.list?.[0];
+            if (row) {
+              await db.query(
+                `INSERT INTO adq_stats_snapshots (account_id, stat_date, snap_hour, cost, view_count, valid_click_count, conversions_count, conversions_cost, order_amount, order_roi, ctr, cpc)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE cost=VALUES(cost), view_count=VALUES(view_count), valid_click_count=VALUES(valid_click_count),
+                   conversions_count=VALUES(conversions_count), conversions_cost=VALUES(conversions_cost), order_amount=VALUES(order_amount),
+                   order_roi=VALUES(order_roi), ctr=VALUES(ctr), cpc=VALUES(cpc)`,
+                [acct.account_id, today, hour, row.cost||0, row.view_count||0, row.valid_click_count||0,
+                 row.conversions_count||0, row.conversions_cost||0, row.order_amount||0, row.order_roi||0, row.ctr||0, row.cpc||0]
+              );
+              synced++;
+            }
+          } catch (e) { /* skip failed */ }
+        }));
+      }
+      if (synced > 0) logger.info(`[Cron] ADQ数据同步完成: ${synced}/${accounts.length}个账户`);
+    } catch (e) {
+      logger.error('[Cron] ADQ数据同步失败', { error: e.message });
+    }
+  });
+
+  // ===== ADQ(腾讯广告)组织Token自动刷新 - 每6小时 =====
+  cron.schedule('27 */6 * * *', async () => {
+    try {
+      const adq = require('../services/adq-sync');
+      // 按唯一refresh_token分组，避免重复刷新（组织token共享）
+      const [tokens] = await db.query(
+        `SELECT MIN(id) as id, refresh_token, MIN(token_expires_at) as expires_at
+         FROM adq_accounts WHERE status=1 AND refresh_token IS NOT NULL AND refresh_token != ''
+         GROUP BY refresh_token`
+      );
+      let refreshed = 0;
+      for (const t of (tokens || [])) {
+        // 提前24小时刷新
+        if (t.expires_at && new Date(t.expires_at) <= new Date(Date.now() + 24 * 3600 * 1000)) {
+          try {
+            await adq.refreshToken(t.id);
+            refreshed++;
+          } catch (e) {
+            logger.error(`[Cron] ADQ Token刷新失败 id=${t.id}: ${e.message}`);
+          }
+        }
+      }
+      logger.info(`[Cron] ADQ Token检查完成, 刷新${refreshed}组`);
+    } catch (e) {
+      logger.error('[Cron] ADQ Token自动刷新失败', { error: e.message });
+    }
+  });
+
   // ===== 跨境TikTok模块定时任务（独立区块）=====
   // 每30分钟同步TikTok消耗数据
   cron.schedule('12,42 * * * *', async () => {
@@ -380,6 +490,83 @@ function startCron() {
       const { checkTikTokTokens } = require('../services/tt-sync');
       await checkTikTokTokens();
     } catch (e) { logger.error('[Cron] TikTok Token检查失败', { error: e.message }); }
+  });
+
+  // ===== 数据推送管理（千川/快手/视频号报表按 pushHours 触发）=====
+  // 每小时第2分钟检查 push_configs 并按钟点推送
+  cron.schedule('2 * * * *', async () => {
+    try {
+      const { checkAndPush } = require('../services/data-push');
+      await checkAndPush();
+    } catch (e) { logger.error('[Cron] 数据推送检查失败', { error: e.message }); }
+  });
+
+  // 启动时立即执行一次 catch-up：若服务重启正好错过整点的 cron 触发窗口，
+  // 靠 push_logs 表防重复，不会造成重复推送
+  setTimeout(async () => {
+    try {
+      const { checkAndPush } = require('../services/data-push');
+      await checkAndPush();
+      logger.info('[Cron] 启动时数据推送 catch-up 完成');
+    } catch (e) { logger.error('[Cron] 启动时数据推送 catch-up 失败', { error: e.message }); }
+  }, 15000);
+
+  // ===== ADQ素材定时清理 - 每分钟检查（按规则的 schedule_time 触发）=====
+  cron.schedule('* * * * *', async () => {
+    try {
+      const now = new Date();
+      const hhmm = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+      const [rules] = await db.query('SELECT * FROM adq_cleanup_rules WHERE enabled=1 AND schedule_time=?', [hhmm]);
+      if (!rules.length) return;
+      const pitcher = require('../routes/adq-pitcher');
+      for (const rule of rules) {
+        try {
+          const today = now.toISOString().slice(0, 10);
+          const [recent] = await db.query(
+            "SELECT id FROM adq_cleanup_logs WHERE rule_id=? AND DATE(executed_at)=? AND exec_type='auto' LIMIT 1",
+            [rule.id, today]
+          );
+          if (recent.length) {
+            logger.info(`[Cron] ADQ清理规则[${rule.name}]今日已执行过，跳过`);
+            continue;
+          }
+          logger.info(`[Cron] 开始执行ADQ清理规则[${rule.name}]`);
+          const result = await pitcher.executeCleanup(rule, 'auto', 'cron');
+          logger.info(`[Cron] ADQ清理规则[${rule.name}]完成: 清理${result.cleaned}个, 失败${result.failed}个`);
+        } catch (e) {
+          logger.error(`[Cron] ADQ清理规则[${rule.name}]失败: ${e.message}`);
+        }
+      }
+    } catch (e) { logger.error('[Cron] ADQ素材清理检查失败', { error: e.message }); }
+  });
+
+  // ===== ADQ 自动投放 - 每分钟检查（按规则的 schedule_time 触发）=====
+  cron.schedule('* * * * *', async () => {
+    try {
+      const now = new Date();
+      const hhmm = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+      const [rules] = await db.query('SELECT * FROM adq_autodeliver_rules WHERE enabled=1 AND schedule_time=?', [hhmm]);
+      if (!rules.length) return;
+      const pitcher = require('../routes/adq-pitcher');
+      for (const rule of rules) {
+        try {
+          const today = now.toISOString().slice(0, 10);
+          const [recent] = await db.query(
+            "SELECT id FROM adq_autodeliver_logs WHERE rule_id=? AND DATE(executed_at)=? AND exec_type='scheduled' LIMIT 1",
+            [rule.id, today]
+          );
+          if (recent.length) {
+            logger.info(`[Cron] ADQ投放规则[${rule.name}]今日已执行过，跳过`);
+            continue;
+          }
+          logger.info(`[Cron] 开始执行ADQ投放规则[${rule.name}]`);
+          const result = await pitcher.executeAutoDeliver(rule, 'scheduled', 'cron');
+          logger.info(`[Cron] ADQ投放规则[${rule.name}]完成: 新增${result.added}, 跳过${result.skipped}, 失败${result.failed}`);
+        } catch (e) {
+          logger.error(`[Cron] ADQ投放规则[${rule.name}]失败: ${e.message}`);
+        }
+      }
+    } catch (e) { logger.error('[Cron] ADQ自动投放检查失败', { error: e.message }); }
   });
 
   logger.info('[Cron] 定时任务启动成功');

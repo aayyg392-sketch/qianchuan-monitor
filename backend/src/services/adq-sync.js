@@ -14,17 +14,23 @@ const ADQ_TOKEN_URL = 'https://api.e.qq.com/oauth/token';
 
 async function getAdqConfig() {
   const [rows] = await db.query(
-    "SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN ('adq_client_id', 'adq_client_secret', 'adq_redirect_uri')"
+    "SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN ('adq_app_id', 'adq_app_secret', 'adq_redirect_uri', 'adq_client_id', 'adq_client_secret')"
   );
-  const cfg = {};
-  rows.forEach(r => { cfg[r.setting_key] = r.setting_value; });
-  return cfg;
+  const raw = {};
+  rows.forEach(r => { raw[r.setting_key] = r.setting_value; });
+  // 兼容两种key名
+  return {
+    adq_client_id: raw.adq_client_id || raw.adq_app_id || '',
+    adq_client_secret: raw.adq_client_secret || raw.adq_app_secret || '',
+    adq_redirect_uri: raw.adq_redirect_uri || (process.env.FRONTEND_URL || 'https://business.snefe.com') + '/api/adq/oauth-callback',
+  };
 }
 
 async function refreshToken(accountId) {
   const [rows] = await db.query('SELECT * FROM adq_accounts WHERE id = ?', [accountId]);
   if (!rows.length) throw new Error('ADQ账户不存在');
   const account = rows[0];
+  if (!account.refresh_token) throw new Error('该账户无refresh_token，请重新授权');
   const cfg = await getAdqConfig();
 
   const resp = await axios.get(ADQ_TOKEN_URL, {
@@ -43,11 +49,18 @@ async function refreshToken(accountId) {
   const expiresAt = new Date(Date.now() + tokenData.access_token_expires_in * 1000);
   const refreshExpiresAt = new Date(Date.now() + tokenData.refresh_token_expires_in * 1000);
 
-  await db.query(
-    'UPDATE adq_accounts SET access_token = ?, refresh_token = ?, token_expires_at = ?, refresh_expires_at = ? WHERE id = ?',
-    [tokenData.access_token, tokenData.refresh_token, expiresAt, refreshExpiresAt, accountId]
+  // 组织token共享：刷新时同步更新所有使用相同refresh_token的账户
+  const oldRefreshToken = account.refresh_token;
+  const [updated] = await db.query(
+    'UPDATE adq_accounts SET access_token = ?, refresh_token = ?, token_expires_at = ?, refresh_expires_at = ? WHERE refresh_token = ?',
+    [tokenData.access_token, tokenData.refresh_token, expiresAt, refreshExpiresAt, oldRefreshToken]
   );
-  logger.info(`ADQ Token刷新成功: account_id=${account.account_id}`);
+  const updatedCount = updated.affectedRows || 1;
+  if (updatedCount > 1) {
+    logger.info(`ADQ 组织Token刷新成功, 同步更新${updatedCount}个账户`);
+  } else {
+    logger.info(`ADQ Token刷新成功: account_id=${account.account_id}`);
+  }
   return tokenData.access_token;
 }
 
@@ -55,11 +68,28 @@ async function getValidToken(accountId) {
   const [rows] = await db.query('SELECT * FROM adq_accounts WHERE id = ?', [accountId]);
   if (!rows.length) throw new Error('ADQ账户不存在');
   const account = rows[0];
+  if (!account.access_token) throw new Error('该账户未绑定Token，请先授权');
   // 提前5分钟刷新
-  if (new Date(account.token_expires_at) <= new Date(Date.now() + 5 * 60 * 1000)) {
+  if (account.token_expires_at && new Date(account.token_expires_at) <= new Date(Date.now() + 5 * 60 * 1000)) {
     return refreshToken(accountId);
   }
   return account.access_token;
+}
+
+// ============ 实名认证令牌 user_token ============
+let _utCache = { token: null, expires: 0, ts: 0 };
+
+async function getUserToken() {
+  if (_utCache.token && _utCache.expires * 1000 > Date.now() && Date.now() - _utCache.ts < 60000) return _utCache.token;
+  try {
+    const [rows] = await db.query("SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN ('adq_user_token','adq_user_token_expires')");
+    const m = {}; rows.forEach(r => { m[r.setting_key] = r.setting_value; });
+    if (m.adq_user_token && parseInt(m.adq_user_token_expires || 0) * 1000 > Date.now()) {
+      _utCache = { token: m.adq_user_token, expires: parseInt(m.adq_user_token_expires), ts: Date.now() };
+      return m.adq_user_token;
+    }
+  } catch (e) { /* ignore */ }
+  return null;
 }
 
 // ============ 通用请求封装 ============
@@ -74,6 +104,12 @@ async function adqApiCall(accessToken, endpoint, method = 'GET', data = {}, adAc
     nonce,
   };
   if (adAccountId) commonParams.account_id = adAccountId;
+
+  // 写操作自动带实名认证令牌
+  if (method !== 'GET') {
+    const ut = await getUserToken();
+    if (ut) commonParams.user_token = ut;
+  }
 
   try {
     let resp;
@@ -106,28 +142,41 @@ async function adqApiCall(accessToken, endpoint, method = 'GET', data = {}, adAc
 // ============ 报表接口 ============
 
 async function getDailyReports(accessToken, adAccountId, params) {
+  const level = params.level || 'REPORT_LEVEL_ADGROUP';
+  // group_by 是必填参数，根据level自动设置默认值
+  const defaultGroupBy = {
+    'REPORT_LEVEL_ADVERTISER': ['date'],
+    'REPORT_LEVEL_CAMPAIGN': ['campaign_id'],
+    'REPORT_LEVEL_ADGROUP': ['adgroup_id'],
+    'REPORT_LEVEL_DYNAMIC_CREATIVE': ['dynamic_creative_id'],
+    'REPORT_LEVEL_PROJECT': ['project_id'],
+  };
+  const groupBy = params.group_by || defaultGroupBy[level] || ['date'];
+
   return adqApiCall(accessToken, 'daily_reports/get', 'GET', {
     account_id: adAccountId,
-    level: params.level || 'REPORT_LEVEL_ADGROUP',
+    level,
     date_range: JSON.stringify(params.date_range),
+    group_by: JSON.stringify(groupBy),
     fields: JSON.stringify(params.fields || [
       'date', 'campaign_id', 'campaign_name', 'adgroup_id', 'adgroup_name',
-      'cost', 'impression', 'click', 'ctr', 'cpc', 'cpm',
-      'conversion', 'conversion_cost', 'conversion_rate',
+      'cost', 'view_count', 'valid_click_count', 'ctr', 'cpc', 'thousand_display_price',
+      'conversions_count', 'conversions_cost', 'deep_conversions_count',
     ]),
     page: params.page || 1,
     page_size: params.page_size || 100,
-    ...(params.group_by ? { group_by: JSON.stringify(params.group_by) } : {}),
   }, adAccountId);
 }
 
 async function getHourlyReports(accessToken, adAccountId, params) {
+  const level = params.level || 'REPORT_LEVEL_ADGROUP';
   return adqApiCall(accessToken, 'hourly_reports/get', 'GET', {
     account_id: adAccountId,
-    level: params.level || 'REPORT_LEVEL_ADGROUP',
+    level,
     date_range: JSON.stringify(params.date_range),
+    group_by: JSON.stringify(params.group_by || ['hour']),
     fields: JSON.stringify(params.fields || [
-      'hour', 'adgroup_id', 'adgroup_name', 'cost', 'impression', 'click', 'conversion',
+      'hour', 'adgroup_id', 'adgroup_name', 'cost', 'view_count', 'valid_click_count', 'conversions_count',
     ]),
     page: params.page || 1,
     page_size: params.page_size || 100,
@@ -237,6 +286,21 @@ async function toggleFeaturedComment(accessToken, adAccountId, finderAdObjectId,
   }, adAccountId);
 }
 
+// ============ 动态创意 ============
+
+async function getDynamicCreatives(accessToken, adAccountId, params = {}) {
+  return adqApiCall(accessToken, 'dynamic_creatives/get', 'GET', {
+    account_id: adAccountId,
+    page: params.page || 1,
+    page_size: Math.min(params.page_size || 100, 100),
+    ...(params.filtering ? { filtering: JSON.stringify(params.filtering) } : {}),
+    fields: JSON.stringify(params.fields || [
+      'dynamic_creative_id', 'adgroup_id', 'campaign_id', 'creative_name',
+      'creative_elements', 'created_time', 'last_modified_time',
+    ]),
+  }, adAccountId);
+}
+
 // ============ 商品库 ============
 
 async function getProductCatalogs(accessToken, adAccountId) {
@@ -268,6 +332,7 @@ module.exports = {
   getAdqConfig,
   refreshToken,
   getValidToken,
+  getUserToken,
   adqApiCall,
   getDailyReports,
   getHourlyReports,
@@ -281,6 +346,7 @@ module.exports = {
   replyComment,
   deleteComment,
   toggleFeaturedComment,
+  getDynamicCreatives,
   getProductCatalogs,
   getProductItems,
   reportUserActions,

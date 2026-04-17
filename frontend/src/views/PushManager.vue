@@ -159,6 +159,192 @@
     </div>
    </div>
 
+   <!-- 巨量千川数据推送 -->
+   <div class="config-card">
+    <div class="card-header">
+     <div class="card-title">巨量千川数据推送</div>
+     <a-switch v-model:checked="configs.qianchuan.enabled" @change="saveConfigs" />
+    </div>
+    <div class="card-desc">定时推送千川广告投放数据到钉钉群</div>
+    <div class="card-settings" v-if="configs.qianchuan.enabled">
+     <div class="setting-item">
+      <span class="setting-label">推送间隔</span>
+      <a-select v-model:value="configs.qianchuan.pushInterval" :style="{width:'120px'}" size="small" @change="saveConfigs">
+       <a-select-option :value="1">1小时</a-select-option>
+       <a-select-option :value="2">2小时</a-select-option>
+       <a-select-option :value="4">4小时</a-select-option>
+      </a-select>
+     </div>
+     <div class="setting-item setting-block">
+      <span class="setting-label">推送时段</span>
+      <div class="hour-tags">
+       <a-checkbox-group v-model:value="configs.qianchuan.pushHours" @change="saveConfigs">
+        <a-checkbox v-for="h in [8,10,12,14,16,18,20,22]" :key="h" :value="h">{{h}}:00</a-checkbox>
+       </a-checkbox-group>
+      </div>
+     </div>
+     <div class="setting-item setting-block">
+      <span class="setting-label">🤖 钉钉群机器人</span>
+      <div class="webhook-list">
+       <div class="webhook-row" v-for="(wh,idx) in configs.qianchuan.webhooks" :key="idx">
+        <a-input v-model:value="wh.name" size="small" placeholder="群名称" :style="{width:'100px','flex-shrink':'0'}" @blur="saveConfigs" />
+        <a-input v-model:value="wh.url" size="small" placeholder="Webhook地址" :style="{flex:'1'}" @blur="saveConfigs" />
+        <a-switch v-model:checked="wh.enabled" size="small" @change="saveConfigs" />
+       </div>
+      </div>
+     </div>
+     <div class="setting-item setting-block">
+      <span class="setting-label">推送账户</span>
+      <div class="account-tags">
+       <a-checkbox-group v-model:value="configs.qianchuan.selectedAccounts" @change="saveConfigs">
+        <a-checkbox v-for="a in qcAccountList" :key="a.advertiser_id" :value="a.advertiser_id">{{a.advertiser_name||a.advertiser_id}}</a-checkbox>
+       </a-checkbox-group>
+      </div>
+     </div>
+    </div>
+   </div>
+
+   <!-- 快手数据推送 -->
+   <div class="config-card">
+    <div class="card-header">
+     <div class="card-title">快手数据推送</div>
+     <a-switch v-model:checked="configs.ksData.enabled" @change="saveConfigs" />
+    </div>
+    <div class="card-desc">定时推送快手电商数据到钉钉群</div>
+    <div class="card-settings" v-if="configs.ksData.enabled">
+     <div class="setting-item">
+      <span class="setting-label">推送间隔</span>
+      <a-select v-model:value="configs.ksData.pushInterval" :style="{width:'120px'}" size="small" @change="saveConfigs">
+       <a-select-option :value="1">1小时</a-select-option>
+       <a-select-option :value="2">2小时</a-select-option>
+       <a-select-option :value="4">4小时</a-select-option>
+      </a-select>
+     </div>
+     <div class="setting-item setting-block">
+      <span class="setting-label">推送时段</span>
+      <div class="hour-tags">
+       <a-checkbox-group v-model:value="configs.ksData.pushHours" @change="saveConfigs">
+        <a-checkbox v-for="h in [8,10,12,14,16,18,20,22]" :key="h" :value="h">{{h}}:00</a-checkbox>
+       </a-checkbox-group>
+      </div>
+     </div>
+     <div class="setting-item setting-block">
+      <span class="setting-label">推送内容</span>
+      <div class="target-group">
+       <a-checkbox v-model:checked="configs.ksData.pushLiveData" @change="saveConfigs">直播数据</a-checkbox>
+       <a-checkbox v-model:checked="configs.ksData.pushOrderData" @change="saveConfigs">订单数据</a-checkbox>
+       <a-checkbox v-model:checked="configs.ksData.pushAdData" @change="saveConfigs">广告数据</a-checkbox>
+       <a-checkbox v-model:checked="configs.ksData.showAdCost" @change="saveConfigs">显示广告消耗</a-checkbox>
+      </div>
+     </div>
+     <div class="setting-item setting-block">
+      <span class="setting-label">🤖 钉钉群机器人</span>
+      <div class="webhook-list">
+       <div class="webhook-row" v-for="(wh,idx) in configs.ksData.webhooks" :key="idx">
+        <a-input v-model:value="wh.name" size="small" placeholder="群名称" :style="{width:'100px','flex-shrink':'0'}" @blur="saveConfigs" />
+        <a-input v-model:value="wh.url" size="small" placeholder="Webhook地址" :style="{flex:'1'}" @blur="saveConfigs" />
+        <a-switch v-model:checked="wh.enabled" size="small" @change="saveConfigs" />
+       </div>
+      </div>
+     </div>
+     <div class="setting-item setting-block">
+      <span class="setting-label">快手店铺</span>
+      <div class="account-tags">
+       <a-checkbox-group v-model:value="configs.ksData.selectedShops" @change="saveConfigs">
+        <a-checkbox v-for="s in ksShopList" :key="s.shop_id" :value="s.shop_id">{{s.shop_name}}</a-checkbox>
+       </a-checkbox-group>
+      </div>
+     </div>
+     <div class="setting-item setting-block">
+      <span class="setting-label">磁力帐号</span>
+      <div class="account-tags">
+       <a-checkbox-group v-model:value="configs.ksData.selectedAdAccounts" @change="saveConfigs">
+        <a-checkbox v-for="a in ksAdAccountList" :key="a.advertiser_id" :value="a.advertiser_id">{{a.advertiser_name||a.advertiser_id}}</a-checkbox>
+       </a-checkbox-group>
+      </div>
+     </div>
+    </div>
+   </div>
+
+   <!-- 视频号数据推送 -->
+   <div class="config-card">
+    <div class="card-header">
+     <div class="card-title">视频号数据推送</div>
+     <a-switch v-model:checked="configs.wxChannels.enabled" @change="saveConfigs" />
+    </div>
+    <div class="card-desc">定时推送视频号运营数据到钉钉群</div>
+    <div class="card-settings" v-if="configs.wxChannels.enabled">
+     <div class="setting-item">
+      <span class="setting-label">推送间隔</span>
+      <a-select v-model:value="configs.wxChannels.pushInterval" :style="{width:'120px'}" size="small" @change="saveConfigs">
+       <a-select-option :value="1">1小时</a-select-option>
+       <a-select-option :value="2">2小时</a-select-option>
+       <a-select-option :value="4">4小时</a-select-option>
+      </a-select>
+     </div>
+     <div class="setting-item setting-block">
+      <span class="setting-label">推送时段</span>
+      <div class="hour-tags">
+       <a-checkbox-group v-model:value="configs.wxChannels.pushHours" @change="saveConfigs">
+        <a-checkbox v-for="h in [8,10,12,14,16,18,20,22]" :key="h" :value="h">{{h}}:00</a-checkbox>
+       </a-checkbox-group>
+      </div>
+     </div>
+     <div class="setting-item setting-block">
+      <span class="setting-label">推送内容</span>
+      <div class="target-group">
+       <a-checkbox v-model:checked="configs.wxChannels.pushLiveData" @change="saveConfigs">直播数据</a-checkbox>
+       <a-checkbox v-model:checked="configs.wxChannels.pushVideoData" @change="saveConfigs">视频数据</a-checkbox>
+       <a-checkbox v-model:checked="configs.wxChannels.pushFinderData" @change="saveConfigs">达人数据</a-checkbox>
+       <a-checkbox v-model:checked="configs.wxChannels.pushAdqData" @change="saveConfigs">ADQ广告数据</a-checkbox>
+      </div>
+     </div>
+     <div class="setting-item setting-block" v-if="configs.wxChannels.pushAdqData">
+      <span class="setting-label">ADQ主体</span>
+      <div class="account-tags">
+       <a-checkbox-group v-model:value="configs.wxChannels.selectedAdqOrgs" @change="saveConfigs">
+        <a-checkbox v-for="org in adqOrgList" :key="org" :value="org">{{org}}</a-checkbox>
+       </a-checkbox-group>
+      </div>
+     </div>
+     <div class="setting-item setting-block">
+      <span class="setting-label">🤖 钉钉群机器人</span>
+      <div class="webhook-list">
+       <div class="webhook-row" v-for="(wh,idx) in configs.wxChannels.webhooks" :key="idx">
+        <a-input v-model:value="wh.name" size="small" placeholder="群名称" :style="{width:'100px','flex-shrink':'0'}" @blur="saveConfigs" />
+        <a-input v-model:value="wh.url" size="small" placeholder="Webhook地址" :style="{flex:'1'}" @blur="saveConfigs" />
+        <a-switch v-model:checked="wh.enabled" size="small" @change="saveConfigs" />
+       </div>
+      </div>
+     </div>
+    </div>
+   </div>
+
+   <!-- 每日报表 -->
+   <div class="config-card">
+    <div class="card-header">
+     <div class="card-title">每日报表</div>
+     <a-switch v-model:checked="configs.dailyReport.enabled" @change="saveConfigs" />
+    </div>
+    <div class="card-desc">每日自动推送汇总数据报表</div>
+    <div class="card-settings" v-if="configs.dailyReport.enabled">
+     <div class="setting-item setting-block">
+      <span class="setting-label">🤖 钉钉群机器人</span>
+      <div class="webhook-list">
+       <div class="webhook-row" v-for="(wh,idx) in configs.dailyReport.webhooks" :key="idx">
+        <a-input v-model:value="wh.name" size="small" placeholder="群名称" :style="{width:'100px','flex-shrink':'0'}" @blur="saveConfigs" />
+        <a-input v-model:value="wh.url" size="small" placeholder="Webhook地址" :style="{flex:'1'}" @blur="saveConfigs" />
+        <a-switch v-model:checked="wh.enabled" size="small" @change="saveConfigs" />
+       </div>
+      </div>
+     </div>
+     <div class="setting-item">
+      <span class="setting-label">👤 钉钉个人UserID</span>
+      <a-input v-model:value="configs.dailyReport.customUserIds" size="small" placeholder="多个用逗号分隔" @blur="saveConfigs" :style="{width:'100%','max-width':'360px'}" />
+     </div>
+    </div>
+   </div>
+
    <!-- 上播通知 -->
    <div class="config-card">
     <div class="card-header">
@@ -265,7 +451,7 @@
      </div>
     </div>
    </div>
-   <a-empty v-else description="暂无推送记录" :image="null" />
+   <div v-else style="text-align:center;padding:40px 0;color:#999;font-size:13px">暂无推送记录</div>
 
    <div v-if="historyTotal > 0" class="history-total">
     共 {{ historyTotal }} 条记录
@@ -288,6 +474,11 @@ const historyDate = ref(dayjs())
 const historyType = ref(undefined)
 const saveStatus = ref('')
 
+const qcAccountList = ref([])
+const ksShopList = ref([])
+const ksAdAccountList = ref([])
+const adqAccountList = ref([])
+
 const defaultConfigs = {
  liveReport: {
   enabled: true,
@@ -307,6 +498,41 @@ const defaultConfigs = {
   sendToGroup: false,
   webhookUrl: ''
  },
+ qianchuan: {
+  enabled: false,
+  pushInterval: 2,
+  pushHours: [8, 10, 12, 14, 16, 18, 20, 22],
+  webhooks: [{ name: '', url: '', enabled: true }],
+  selectedAccounts: []
+ },
+ ksData: {
+  enabled: false,
+  pushInterval: 2,
+  pushHours: [8, 10, 12, 14, 16, 18, 20, 22],
+  pushLiveData: true,
+  pushOrderData: true,
+  pushAdData: false,
+  showAdCost: false,
+  webhooks: [{ name: '', url: '', enabled: true }],
+  selectedShops: [],
+  selectedAdAccounts: []
+ },
+ wxChannels: {
+  enabled: false,
+  pushInterval: 2,
+  pushHours: [8, 10, 12, 14, 16, 18, 20, 22],
+  pushLiveData: true,
+  pushVideoData: true,
+  pushFinderData: false,
+  pushAdqData: false,
+  selectedAdqOrgs: [],
+  webhooks: [{ name: '', url: '', enabled: true }]
+ },
+ dailyReport: {
+  enabled: false,
+  webhooks: [{ name: '', url: '', enabled: true }],
+  customUserIds: ''
+ },
  preLiveNotify: {
   enabled: true,
   remindBefore: 2,
@@ -317,6 +543,12 @@ const defaultConfigs = {
 }
 
 const configs = reactive(JSON.parse(JSON.stringify(defaultConfigs)))
+
+const adqOrgList = computed(() => {
+ const names = new Set()
+ adqAccountList.value.forEach(a => { if (a.account_name) names.add(a.account_name) })
+ return [...names]
+})
 
 const todayReviewCount = computed(() => {
  const today = dayjs().format('YYYY-MM-DD')
@@ -333,20 +565,17 @@ async function loadConfigs() {
   const res = await request.get('/anchor/push-configs')
   if (res?.data) {
    const data = res.data
-   if (data.liveReport) {
-    Object.assign(configs.liveReport, data.liveReport)
-    if (data.liveReport.webhooks) {
-     configs.liveReport.webhooks = data.liveReport.webhooks
+   const sections = ['liveReport', 'anchorReview', 'scheduleNotify', 'qianchuan', 'ksData', 'wxChannels', 'dailyReport', 'preLiveNotify']
+   for (const key of sections) {
+    if (data[key]) {
+     if (data[key].webhooks) {
+      configs[key].webhooks = data[key].webhooks
+     }
+     Object.assign(configs[key], { ...defaultConfigs[key], ...data[key] })
+     if (data[key].webhooks) {
+      configs[key].webhooks = data[key].webhooks
+     }
     }
-   }
-   if (data.anchorReview) {
-    Object.assign(configs.anchorReview, data.anchorReview)
-   }
-   if (data.scheduleNotify) {
-    Object.assign(configs.scheduleNotify, { ...defaultConfigs.scheduleNotify, ...data.scheduleNotify })
-   }
-   if (data.preLiveNotify) {
-    Object.assign(configs.preLiveNotify, { ...defaultConfigs.preLiveNotify, ...data.preLiveNotify })
    }
   }
  } catch {
@@ -415,8 +644,45 @@ function formatTime(time) {
 
 let initialized = false
 
+async function loadAccounts() {
+ try {
+  const res = await request.get('/rbac/ad-accounts')
+  if (res?.data?.qianchuan) {
+   qcAccountList.value = res.data.qianchuan
+  } else if (Array.isArray(res?.data)) {
+   qcAccountList.value = res.data
+  }
+ } catch {
+  // ignore
+ }
+ try {
+  const res = await request.get('/ks/accounts')
+  if (Array.isArray(res?.data)) {
+   ksShopList.value = res.data
+  }
+ } catch {
+  // ignore
+ }
+ try {
+  const res = await request.get('/ks-ad/accounts')
+  if (Array.isArray(res?.data)) {
+   ksAdAccountList.value = res.data
+  }
+ } catch {
+  // ignore
+ }
+ try {
+  const res = await request.get('/adq/accounts')
+  if (res?.data && Array.isArray(res.data)) {
+   adqAccountList.value = res.data.filter(a => a.status === 1)
+  }
+ } catch {
+  // ignore
+ }
+}
+
 onMounted(async () => {
- await loadConfigs()
+ await Promise.all([loadConfigs(), loadAccounts()])
  initialized = true
  loadHistory()
 })
@@ -519,6 +785,13 @@ watch(
  display: flex;
  flex-direction: column;
  gap: 6px;
+}
+
+.hour-tags,
+.account-tags {
+ display: flex;
+ flex-wrap: wrap;
+ gap: 4px;
 }
 
 .card-footer {

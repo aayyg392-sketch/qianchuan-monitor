@@ -149,14 +149,14 @@ async function syncOrders(account, accessToken) {
   logger.info(`[KS-Sync] 开始同步订单: ${account.shop_name}`);
 
   try {
-    // 同步今天和昨天的订单
-    const today = new Date();
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
+    // 同步今天和昨天的订单（用dayjs避免toISOString的UTC时区偏移bug）
+    const dayjs = require('dayjs');
+    const todayStr = dayjs().format('YYYY-MM-DD');
+    const yesterdayStr = dayjs().subtract(1, 'day').format('YYYY-MM-DD');
 
-    for (const date of [yesterday, today]) {
-      const beginTime = Math.floor(new Date(date.toISOString().slice(0, 10) + 'T00:00:00+08:00').getTime() ); // 毫秒
-      const endTime = Math.floor(new Date(date.toISOString().slice(0, 10) + 'T23:59:59+08:00').getTime() ); // 毫秒
+    for (const dateStr of [yesterdayStr, todayStr]) {
+      const beginTime = dayjs(dateStr).startOf('day').valueOf(); // 毫秒，北京时间00:00
+      const endTime = dayjs(dateStr).endOf('day').valueOf(); // 毫秒，北京时间23:59:59
       let pageCursor = '';
       let totalSynced = 0;
       let maxPages = 100; // 安全上限，防止死循环
@@ -244,7 +244,7 @@ async function syncOrders(account, accessToken) {
         await sleep(300);
       } while (pageCursor);
 
-      logger.info(`[KS-Sync] ${date.toISOString().slice(0, 10)} 同步订单: ${totalSynced}条`);
+      logger.info(`[KS-Sync] ${dateStr} 同步订单: ${totalSynced}条`);
     }
   } catch (e) {
     if (e instanceof QuotaExceededError) throw e;  // 配额错误向上抛出
@@ -342,13 +342,9 @@ async function syncDailyStats(account) {
   logger.info(`[KS-Sync] 开始汇总日统计: ${account.shop_name}`);
 
   try {
-    // 汇总今天和昨天
-    const dates = [];
-    const today = new Date();
-    dates.push(today.toISOString().slice(0, 10));
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-    dates.push(yesterday.toISOString().slice(0, 10));
+    // 汇总今天和昨天（用dayjs避免UTC时区偏移）
+    const dayjs = require('dayjs');
+    const dates = [dayjs().format('YYYY-MM-DD'), dayjs().subtract(1, 'day').format('YYYY-MM-DD')];
 
     for (const statDate of dates) {
       // 从订单表汇总

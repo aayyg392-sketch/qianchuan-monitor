@@ -75,7 +75,7 @@ async function syncTodayOrders() {
     const token = await getShopToken();
     const now = Math.floor(Date.now() / 1000);
     const todayDs = dayjs().format('YYYYMMDD');
-    const todayStart = Math.floor(new Date(dayjs().format('YYYY-MM-DD')).getTime() / 1000);
+    const todayStart = dayjs().startOf('day').unix(); // 北京时间00:00（修复时区bug: new Date()按UTC解析导致=北京8点）
 
     // 拉取所有今日订单ID
     let allIds = [], nextKey = '', hasMore = true;
@@ -501,6 +501,53 @@ router.post('/sync', async (req, res) => {
     res.json({ code: 0, data: { synced } });
   } catch (e) {
     res.json({ code: -1, msg: e.message });
+  }
+});
+
+// ========== 订单表同步（测试端点） ==========
+const wxShopOrderSync = require('../services/wx-shop-order-sync');
+const auth = require('../middleware/auth');
+
+// 手动触发同步 - 按日期全量 /wx-compass/shop-orders/sync?ds=2026-04-17
+router.get('/shop-orders/sync', auth(), async (req, res) => {
+  try {
+    const { ds } = req.query;
+    if (ds) {
+      const r = await wxShopOrderSync.syncDayByCreate(ds);
+      return res.json({ code: 0, msg: `${ds} 同步完成`, data: r });
+    }
+    // 默认：增量同步最近70分钟
+    const r = await wxShopOrderSync.syncRecentUpdates(70);
+    res.json({ code: 0, msg: '增量同步完成', data: r });
+  } catch (e) {
+    res.json({ code: 500, msg: e.message });
+  }
+});
+
+// 对账查询 /wx-compass/shop-orders/check?ds=2026-04-17
+router.get('/shop-orders/check', auth(), async (req, res) => {
+  try {
+    const ds = req.query.ds || dayjs().format('YYYY-MM-DD');
+    const [[row]] = await db.query(
+      `SELECT
+         COUNT(*) AS total_orders,
+         SUM(CASE WHEN status>=20 AND status!=200 THEN 1 ELSE 0 END) AS paid_orders,
+         SUM(CASE WHEN status>=20 AND status!=200 THEN order_price ELSE 0 END)/100 AS paid_gmv,
+         SUM(CASE WHEN status>=20 AND status!=200 THEN product_price ELSE 0 END)/100 AS product_gmv,
+         SUM(refund_amount)/100 AS refund_total
+       FROM wx_shop_orders
+       WHERE DATE(pay_time) = ?`,
+      [ds]
+    );
+    // 同时查罗盘旧数据做对比
+    const dsCompact = ds.replace(/-/g, '');
+    const [[compass]] = await db.query(
+      'SELECT pay_gmv/100 AS compass_gmv, pay_order_cnt AS compass_orders FROM wx_compass_daily WHERE ds=?',
+      [dsCompact]
+    );
+    res.json({ code: 0, data: { ds, orders: row, compass: compass || null } });
+  } catch (e) {
+    res.json({ code: 500, msg: e.message });
   }
 });
 

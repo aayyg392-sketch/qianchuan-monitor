@@ -28,35 +28,37 @@ router.get('/overview', auth(), async (req, res) => {
   const today = dayjs().format('YYYY-MM-DD');
   const yesterday = dayjs().subtract(1, 'day').format('YYYY-MM-DD');
   const weekStart = dayjs().subtract(6, 'day').format('YYYY-MM-DD');
+  const aw = req.accWhere || '';
+  const ap = req.accParams || [];
 
   try {
     // 今日计划汇总
     const [[todayData]] = await db.query(
       `SELECT SUM(cost) AS cost, SUM(convert_cnt) AS orders, SUM(cpm) AS gmv,
         AVG(NULLIF(convert_cost,0)) AS convert_cost, COUNT(*) AS plan_count
-       FROM qc_daily_stats WHERE stat_date=? AND entity_type='campaign'`, [today]
+       FROM qc_daily_stats WHERE stat_date=? AND entity_type='campaign'${aw}`, [today, ...ap]
     );
     // 昨日计划汇总
     const [[yesterdayData]] = await db.query(
       `SELECT SUM(cost) AS cost, SUM(convert_cnt) AS orders, SUM(cpm) AS gmv,
         AVG(NULLIF(convert_cost,0)) AS convert_cost, COUNT(*) AS plan_count
-       FROM qc_daily_stats WHERE stat_date=? AND entity_type='campaign'`, [yesterday]
+       FROM qc_daily_stats WHERE stat_date=? AND entity_type='campaign'${aw}`, [yesterday, ...ap]
     );
     // 素材展示/点击（从material_stats获取）
     const [[todayMat]] = await db.query(
       `SELECT SUM(product_show_count) AS shows, SUM(product_click_count) AS clicks
-       FROM qc_material_stats WHERE stat_date=?`, [today]
+       FROM qc_material_stats WHERE stat_date=?${aw}`, [today, ...ap]
     );
     const [[yesterdayMat]] = await db.query(
       `SELECT SUM(product_show_count) AS shows, SUM(product_click_count) AS clicks
-       FROM qc_material_stats WHERE stat_date=?`, [yesterday]
+       FROM qc_material_stats WHERE stat_date=?${aw}`, [yesterday, ...ap]
     );
     // 7天趋势
     const [trendRows] = await db.query(
       `SELECT DATE_FORMAT(stat_date,'%m-%d') AS d,
         SUM(cost) AS cost, SUM(convert_cnt) AS orders, SUM(cpm) AS gmv
-       FROM qc_daily_stats WHERE stat_date BETWEEN ? AND ? AND entity_type='campaign'
-       GROUP BY stat_date ORDER BY stat_date`, [weekStart, today]
+       FROM qc_daily_stats WHERE stat_date BETWEEN ? AND ? AND entity_type='campaign'${aw}
+       GROUP BY stat_date ORDER BY stat_date`, [weekStart, today, ...ap]
     );
 
     const t = {
@@ -111,6 +113,8 @@ router.get('/overview', auth(), async (req, res) => {
 // 账户聚合列表
 router.get('/accounts-list', auth(), async (req, res) => {
   const targetDate = req.query.date || dayjs().format('YYYY-MM-DD');
+  const accWhereA = req.accWhere ? req.accWhere.replace('advertiser_id', 'a.advertiser_id') : '';
+  const accP = req.accParams || [];
   try {
     const [rows] = await db.query(
       `SELECT a.advertiser_id, a.advertiser_name, a.status,
@@ -125,9 +129,9 @@ router.get('/accounts-list', auth(), async (req, res) => {
        FROM qc_accounts a
        LEFT JOIN qc_daily_stats s ON a.advertiser_id=s.entity_id
          AND s.stat_date=? AND s.entity_type='account'
-       WHERE a.status=1
+       WHERE a.status=1${accWhereA}
        ORDER BY COALESCE(s.cost,0) DESC`,
-      [targetDate, targetDate]
+      [targetDate, targetDate, ...accP]
     );
 
     // 汇总
@@ -161,6 +165,8 @@ router.get('/', auth(), async (req, res) => {
   const orderClause = sortMap[sort_by] || 's.cost DESC';
 
   try {
+    const aw = req.accWhere || '';
+    const ap = req.accParams || [];
     let where = "s.stat_date=? AND s.entity_type='campaign'";
     const params = [targetDate];
 
@@ -175,6 +181,10 @@ router.get('/', auth(), async (req, res) => {
     if (advertiser_id) {
       where += ' AND s.advertiser_id=?';
       params.push(advertiser_id);
+    }
+    if (aw) {
+      where += aw.replace('advertiser_id', 's.advertiser_id');
+      params.push(...ap);
     }
 
     // 汇总

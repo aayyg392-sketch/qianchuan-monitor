@@ -28,8 +28,8 @@ const routes = [
       { path: 'industry-videos', name: 'IndustryVideos', component: () => import('../views/IndustryVideos.vue'), meta: { title: '内容榜单' } },
       { path: 'competitor-videos', name: 'CompetitorVideos', component: () => import('../views/CompetitorVideos.vue'), meta: { title: '竞品爆款视频' } },
       { path: 'premium-materials', name: 'PremiumMaterials', component: () => import('../views/PremiumMaterials.vue'), meta: { title: '优质素材' } },
-      { path: 'material-dimensions', name: 'MaterialDimensions', component: () => import('../views/MaterialDimensions.vue'), meta: { title: '内容人员' } },
       { path: 'ctr-analysis', name: 'CtrAnalysis', component: () => import('../views/CtrAnalysis.vue'), meta: { title: 'CTR素材分析' } },
+      { path: 'material-dimensions', name: 'MaterialDimensions', component: () => import('../views/MaterialDimensions.vue'), meta: { title: '内容人员' } },
       { path: 'ops-workbench', name: 'OpsWorkbench', component: () => import('../views/OpsWorkbench.vue'), meta: { title: '运营工作台' } },
       { path: 'ops-comments', name: 'OpsComments', component: () => import('../views/OpsComments.vue'), meta: { title: '评论管理' } },
       { path: 'push-manager', name: 'PushManager', component: () => import('../views/PushManager.vue'), meta: { title: '数据推送管理' } },
@@ -37,6 +37,7 @@ const routes = [
       { path: 'alerts', name: 'Alerts', component: () => import('../views/Alerts.vue'), meta: { title: '告警中心' } },
       { path: 'reports', name: 'Reports', component: () => import('../views/Reports.vue'), meta: { title: '数据分析' } },
       { path: "accounts", name: "Accounts", component: () => import('../views/Accounts.vue'), meta: { title: '账户管理' } },
+      { path: 'tiktok-dashboard', name: 'TiktokDashboard', component: () => import('../views/TiktokDashboard.vue'), meta: { title: 'TikTok账户管理' } },
       { path: 'settings', name: 'Settings', component: () => import('../views/Settings.vue'), meta: { title: '系统设置' } },
       // AI金牌投手
       { path: 'ai-trader', name: 'AiTrader', component: () => import('../views/AiTrader.vue'), meta: { title: 'AI金牌投手' } },
@@ -58,19 +59,15 @@ const routes = [
       // 视频号运营中心
       { path: 'wx-ops-workbench', name: 'WxOpsWorkbench', component: () => import('../views/WxOpsWorkbench.vue'), meta: { title: '视频号运营工作台' } },
       { path: 'wx-finder-list', name: 'WxFinderList', component: () => import('../views/WxFinderList.vue'), meta: { title: '达人管理' } },
+      { path: 'adq-dashboard', name: 'AdqDashboard', component: () => import('../views/AdqDashboard.vue'), meta: { title: 'ADQ账户管理' } },
       // 快手运营中心
       { path: 'ks-workbench', name: 'KsWorkbench', component: () => import('../views/KsWorkbench.vue'), meta: { title: '快手运营工作台' } },
       { path: 'ks-live-analytics', name: 'KsLiveAnalytics', component: () => import('../views/KsLiveAnalytics.vue'), meta: { title: '直播电商联动' } },
       { path: 'ks-ad-dashboard', name: 'KsAdDashboard', component: () => import('../views/KsAdDashboard.vue'), meta: { title: '账户管理' } },
       { path: 'ks-ad-pitcher', name: 'KsAdPitcher', component: () => import('../views/KsAdPitcher.vue'), meta: { title: '快手AI金牌投手' } },
       { path: 'ks-reviews', name: 'KsReviews', component: () => import('../views/KsReviews.vue'), meta: { title: '评价管理' } },
-      // 跨境TikTok模块（独立目录）
-      { path: 'tt-dashboard', name: 'TtDashboard', component: () => import('../views/tiktok/TtDashboard.vue'), meta: { title: '跨境驾驶舱' } },
-      { path: 'tt-materials', name: 'TtMaterials', component: () => import('../views/tiktok/TtMaterials.vue'), meta: { title: '素材管理' } },
-      { path: 'tt-materials/:id', name: 'TtMaterialDetail', component: () => import('../views/tiktok/TtMaterialDetail.vue'), meta: { title: '素材详情' } },
-      { path: 'tt-push', name: 'TtPush', component: () => import('../views/tiktok/TtPush.vue'), meta: { title: '素材推送' } },
-      { path: 'tt-stats', name: 'TtStats', component: () => import('../views/tiktok/TtStats.vue'), meta: { title: '素材消耗' } },
-      { path: 'tt-accounts', name: 'TtAccounts', component: () => import('../views/tiktok/TtAccounts.vue'), meta: { title: 'TikTok账户' } },
+      // AI投放引擎
+      { path: 'ai-engine', name: 'AiEngine', component: () => import('../views/AiEngine.vue'), meta: { title: 'AI投放引擎' } },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/' },
@@ -83,25 +80,34 @@ const router = createRouter({
 })
 
 router.beforeEach(async (to, from, next) => {
-  const token = localStorage.getItem('qc_token')
-  if (!to.meta.public && !token) {
-    next('/login')
-  } else if (to.path === '/login' && token) {
-    next('/')
-  } else {
-    // 确保权限已加载
+  try {
+    const token = localStorage.getItem('qc_token')
+    if (!to.meta.public && !token) {
+      return next('/login')
+    }
+    if (to.path === '/login' && token) {
+      return next('/')
+    }
+    // 确保权限已加载（失败也必须放行，防止卡死菜单）
     if (token && to.path !== '/login') {
-      const { useAuthStore } = await import('../store/auth')
-      const auth = useAuthStore()
-      if (!auth.permissions?.menus || !auth.permissions.menus.length) {
-        await auth.fetchPermissions()
-      }
-      if (!auth.user) {
-        await auth.fetchMe()
+      try {
+        const { useAuthStore } = await import('../store/auth')
+        const auth = useAuthStore()
+        if (!auth.permissions.menus || !auth.permissions.menus.length) {
+          await auth.fetchPermissions()
+        }
+        if (!auth.user) {
+          await auth.fetchMe()
+        }
+      } catch (e) {
+        console.warn('[Router] 权限加载异常，已放行:', e)
       }
     }
     if (to.meta.title) document.title = `${to.meta.title} - 千川监控`
     next()
+  } catch (e) {
+    console.error('[Router] beforeEach 异常:', e)
+    next() // 兜底放行，避免死锁
   }
 })
 

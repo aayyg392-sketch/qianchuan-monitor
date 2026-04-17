@@ -4,13 +4,14 @@
   <div class="ol-filters">
     <select v-model="filter.action">
       <option value="">全部操作</option>
+      <option value="login">登录</option>
+      <option value="rbac">角色/权限</option>
+      <option value="settings">系统设置</option>
+      <option value="accounts">账户管理</option>
       <option value="create_role">创建角色</option>
       <option value="update_role">更新角色</option>
       <option value="delete_role">删除角色</option>
-      <option value="set_role_menus">设置角色菜单</option>
-      <option value="set_role_accounts">设置角色账户</option>
       <option value="set_user_roles">设置用户角色</option>
-      <option value="create_user">创建用户</option>
     </select>
     <button @click="loadLogs">查询</button>
   </div>
@@ -19,10 +20,10 @@
     <tbody>
       <tr v-for="l in logs" :key="l.id">
         <td>{{ formatTime(l.created_at) }}</td>
-        <td>{{ l.username }}</td>
+        <td>{{ l.display_name || l.username || '-' }}</td>
         <td>{{ l.action }}</td>
-        <td>{{ l.target_type }} #{{ l.target_id }}</td>
-        <td>{{ l.ip }}</td>
+        <td>{{ l.target || '-' }}</td>
+        <td>{{ l.ip || '-' }}</td>
         <td><button v-if="l.detail" class="ol-link" @click="showDetail=l.detail">查看</button></td>
       </tr>
       <tr v-if="!logs.length"><td colspan="6" style="text-align:center;color:#999">暂无日志</td></tr>
@@ -59,7 +60,9 @@ async function loadLogs() {
   const params = { page: page.value, page_size: pageSize }
   if (filter.value.action) params.action = filter.value.action
   const res = await request.get('/rbac/logs', { params })
-  if (res.code === 0) { logs.value = res.data.list; total.value = res.data.total }
+  const d = res?.data || res || {}
+  if (d.list) { logs.value = d.list; total.value = d.total || 0 }
+  else if (res?.code === 0) { logs.value = res.data?.list || []; total.value = res.data?.total || 0 }
 }
 
 onMounted(loadLogs)

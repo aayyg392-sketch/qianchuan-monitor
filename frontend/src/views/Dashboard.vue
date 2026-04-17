@@ -1,15 +1,67 @@
 <template>
   <div class="dash">
 
-    <!-- ===== 日期筛选行 ===== -->
-    <div class="dash-filter">
-      <div class="dash-filter__date">
-        <span class="dash-filter__sync-main">数据截至 {{ overviewSyncTime || today }}</span>
+    <!-- ===== 实时数据 Hero ===== -->
+    <div class="dash-hero">
+      <div class="dash-hero__top">
+        <h3 class="dash-hero__title">实时数据</h3>
+        <div class="dash-hero__tabs">
+          <button class="dash-hero__tab" :class="{ active: periodTab === 'today' }" @click="periodTab='today'; loadData(); loadChannelSummary()">今日</button>
+          <button class="dash-hero__tab" :class="{ active: periodTab === 'yesterday' }" @click="periodTab='yesterday'; loadData(); loadChannelSummary()">昨日</button>
+          <button class="dash-hero__tab" :class="{ active: periodTab === '7d' }" @click="periodTab='7d'; loadData(); loadChannelSummary()">近7天</button>
+        </div>
       </div>
-      <div class="dash-filter__right">
-        <button class="dash-filter__btn" :class="{ active: periodTab === 'today' }" @click="periodTab='today'; loadData()">今日</button>
-        <button class="dash-filter__btn" :class="{ active: periodTab === 'yesterday' }" @click="periodTab='yesterday'; loadData()">昨日</button>
-        <button class="dash-filter__btn" :class="{ active: periodTab === '7d' }" @click="periodTab='7d'; loadData()">近7天</button>
+      <div class="dash-hero__cards">
+        <div class="hero-card hero-card--blue">
+          <div class="hero-card__label">{{ periodLabel }}销售 (万)</div>
+          <div class="hero-card__value"><span class="hero-card__sym">¥</span>{{ (channelTotalGmv / 10000).toFixed(2) }}</div>
+        </div>
+        <div class="hero-card hero-card--pink">
+          <div class="hero-card__label">{{ periodLabel }}消耗 (万)</div>
+          <div class="hero-card__value"><span class="hero-card__sym">¥</span>{{ (channelTotalCost / 10000).toFixed(2) }}</div>
+        </div>
+        <div class="hero-card hero-card--red">
+          <div class="hero-card__label">{{ periodLabel }}投产</div>
+          <div class="hero-card__value">{{ overallRoi.toFixed(2) }}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 各渠道数据汇总（折叠卡片） ===== -->
+    <div class="ch-summary" v-if="channelSummary.length">
+      <div v-for="ch in channelSummary" :key="ch.key" class="ch-card" :class="{ 'ch-card--expanded': chExpand[ch.key] }">
+        <div class="ch-card__head" @click="toggleChannel(ch.key)">
+          <span class="ch-card__icon" :style="{ background: ch.color + '18', color: ch.color }">{{ ch.name.charAt(0) }}</span>
+          <div class="ch-card__info">
+            <div class="ch-card__name">{{ ch.name }}</div>
+            <div class="ch-card__sub">{{ ch.shops.length }} 个店铺 · 消耗 ¥{{ fmtMoney(ch.total_cost) }} · ROI {{ ch.roi.toFixed(2) }}</div>
+          </div>
+          <div class="ch-card__total">
+            <div class="ch-card__total-val">¥{{ fmtMoney(ch.total_gmv) }}</div>
+            <div class="ch-card__total-label">总销售</div>
+          </div>
+          <svg class="ch-card__arrow" :class="{ 'ch-card__arrow--open': chExpand[ch.key] }" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8C8C8C" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </div>
+        <div v-show="chExpand[ch.key]" class="ch-card__body">
+          <div v-for="(shop, i) in ch.shops" :key="ch.key + '_' + i" class="ch-shop">
+            <div class="ch-shop__name">{{ shop.name }}</div>
+            <div class="ch-shop__metrics">
+              <div class="ch-shop__col">
+                <span class="ch-shop__col-label">销售</span>
+                <span class="ch-shop__col-val ch-shop__col-val--primary">¥{{ fmtMoney(shop.gmv) }}</span>
+              </div>
+              <div class="ch-shop__col">
+                <span class="ch-shop__col-label">{{ ch.key === 'ks' ? '磁力消耗' : '消耗' }}</span>
+                <span class="ch-shop__col-val">¥{{ fmtMoney(shop.cost) }}</span>
+              </div>
+              <div class="ch-shop__col">
+                <span class="ch-shop__col-label">{{ ch.key === 'ks' ? '磁力ROI' : 'ROI' }}</span>
+                <span class="ch-shop__col-val" :class="roiCls(shop.roi)">{{ shop.roi.toFixed(2) }}</span>
+              </div>
+            </div>
+          </div>
+          <div v-if="!ch.shops.length" class="ch-empty">暂无店铺数据</div>
+        </div>
       </div>
     </div>
 
@@ -80,6 +132,9 @@
       <div class="dt-card__head">
         <span class="dt-card__title">素材消耗榜</span>
         <span class="dt-card__badge dt-card__badge--orange">TOP 10</span>
+        <a-tooltip v-if="coveragePct > 0 && coveragePct < 100" title="全域推广等计划不支持素材维度报表，当前数据仅覆盖部分消耗">
+          <span class="dt-card__coverage" :style="{ color: coveragePct < 50 ? '#faad14' : '#52c41a' }">覆盖{{ coveragePct }}%</span>
+        </a-tooltip>
         <span v-if="lastSyncTime" class="dt-card__sync-time">截至 {{ lastSyncTime }}</span>
       </div>
       <div class="dt-card__body dt-card__body--list">
@@ -172,13 +227,13 @@
                   <div ref="apTrendRef" class="ap-chart" style="height:160px"></div>
                 </div>
 
-                <!-- 图表2: 驱动因子归因 / Top10素材CTR趋势 -->
-                <div class="ap-section" v-if="chartData.drivers?.labels?.length || chartData.drivers?.type === 'top_materials_ctr'">
+                <!-- 图表2: 消耗Top10素材CTR趋势 -->
+                <div class="ap-section" v-if="chartData.drivers?.materials?.length">
                   <div class="ap-section__title">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#FA8C16" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-                    {{ chartData.drivers?.type === 'top_materials_ctr' ? '消耗Top10素材CTR趋势' : analysisCard?.title + ' 驱动因子归因' }}
+                    消耗前10素材 CTR 趋势
                   </div>
-                  <div ref="apCompareRef" class="ap-chart" :style="{ height: chartData.drivers?.type === 'top_materials_ctr' ? '280px' : '200px' }"></div>
+                  <div ref="apCompareRef" class="ap-chart" style="height:260px"></div>
                 </div>
 
                 <!-- 图表3: 各账户该指标对比 -->
@@ -187,7 +242,33 @@
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#722ED1" stroke-width="2"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>
                     各账户 {{ analysisCard?.title }} 对比
                   </div>
-                  <div ref="apBreakdownRef" class="ap-chart" style="height:180px"></div>
+                  <div ref="apBreakdownRef" class="ap-chart" style="height:320px"></div>
+                </div>
+
+                <!-- 板块4: 高曝光低CTR素材预警 -->
+                <div class="ap-section" v-if="chartData.low_ctr_alerts?.length">
+                  <div class="ap-section__title" style="color:#FF4D4F">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#FF4D4F" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                    高曝光低CTR素材预警
+                    <span style="font-size:11px;color:#888;font-weight:400;margin-left:8px">日均CTR {{ chartData.avg_ctr }}%</span>
+                  </div>
+                  <div class="low-ctr-list">
+                    <div v-for="(m, i) in chartData.low_ctr_alerts" :key="'lc-'+i" class="low-ctr-item">
+                      <div class="low-ctr-rank">{{ i + 1 }}</div>
+                      <div class="low-ctr-info">
+                        <div class="low-ctr-name">{{ m.video_name?.slice(0, 30) || m.material_id }}</div>
+                        <div class="low-ctr-metrics">
+                          <span>曝光 <b>{{ m.show_cnt?.toLocaleString() }}</b></span>
+                          <span>点击 <b>{{ m.click_cnt?.toLocaleString() }}</b></span>
+                          <span>消耗 <b>¥{{ m.cost?.toLocaleString() }}</b></span>
+                        </div>
+                      </div>
+                      <div class="low-ctr-val">
+                        <div class="low-ctr-ctr" style="color:#FF4D4F">{{ m.ctr }}%</div>
+                        <div class="low-ctr-gap">低于均值 {{ m.gap }}%</div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </template>
 
@@ -338,7 +419,48 @@ const productTrendTab = ref('campaign')
 
 const accounts = ref([])
 const topCreatives = ref([])
+const channelSummary = ref([])
+const chExpand = ref({})
+const channelTotalGmv = ref(0)
+const channelTotalCost = ref(0)
+const overallRoi = computed(() => {
+  const cost = channelTotalCost.value
+  if (!cost) return 0
+  return channelTotalGmv.value / cost
+})
+const periodLabel = computed(() => {
+  if (periodTab.value === 'today') return '今日'
+  if (periodTab.value === 'yesterday') return '昨日'
+  return '近7天'
+})
+const fmtMoney = (v) => {
+  const n = parseFloat(v) || 0
+  if (n >= 10000) return (n / 10000).toFixed(2) + 'w'
+  return n.toFixed(0)
+}
+const roiCls = (roi) => {
+  const r = parseFloat(roi) || 0
+  if (r >= 2) return 'roi-good'
+  if (r >= 1) return 'roi-warn'
+  return 'roi-bad'
+}
+const toggleChannel = (key) => { chExpand.value[key] = !chExpand.value[key] }
+const loadChannelSummary = async () => {
+  try {
+    const res = await request.get('/dashboard/channel-summary', { params: { period: periodTab.value } })
+    if (res?.code === 0 && res.data) {
+      channelSummary.value = res.data.channels || []
+      channelTotalGmv.value = res.data.total_gmv || 0
+      channelTotalCost.value = res.data.total_cost || 0
+      // 默认全部收起，用户按需展开
+      const expand = {}
+      channelSummary.value.forEach((c) => { expand[c.key] = false })
+      chExpand.value = expand
+    }
+  } catch (e) { console.error('loadChannelSummary error', e) }
+}
 const lastSyncTime = ref('')
+const coveragePct = ref(0)
 const overviewSyncTime = ref('')
 const compareType = ref('full_day')
 const trendEntities = ref([])
@@ -442,7 +564,6 @@ const metricSummaryCards = computed(() => {
   const key = analysisCard.value?.key
   if (!cd?.drivers) return []
   const dr = cd.drivers
-  if (dr.type === 'top_materials_ctr') return [] // CTR用独立图表展示
   const t = dr.today || []
   const y = dr.yesterday || []
   const labels = dr.labels || []
@@ -512,55 +633,29 @@ const renderApCharts = () => {
     })
   }
 
-  // --- 图2: 驱动因子归因 / Top10素材CTR趋势 ---
-  if (apCompareRef.value && cd.drivers?.type === 'top_materials_ctr' && cd.drivers.materials?.length) {
-    // CTR专用：消耗Top10素材CTR趋势（多条折线）
+  // --- 图2: 驱动因子归因 (今日 vs 昨日 横向柱状图) ---
+  if (apCompareRef.value && cd.drivers?.materials?.length) {
     if (apCompareChart) apCompareChart.dispose()
     apCompareChart = echarts.init(apCompareRef.value)
     const mats = cd.drivers.materials
-    const allDates = [...new Set(mats.flatMap(m => m.trend.map(t => t.date)))].sort()
-    const matColors = ['#1677FF', '#52C41A', '#FA8C16', '#722ED1', '#EB2F96', '#13C2C2', '#F5222D', '#2F54EB', '#A0D911', '#FF85C0']
+    const dates = mats[0]?.trend?.map(t => t.date) || []
     const series = mats.map((m, i) => ({
-      name: m.name || m.material_id,
+      name: m.name,
       type: 'line',
-      data: allDates.map(d => { const pt = m.trend.find(t => t.date === d); return pt ? pt.ctr : null }),
+      data: m.trend.map(t => t.ctr),
       smooth: true,
-      connectNulls: true,
-      lineStyle: { width: 2 },
-      itemStyle: { color: matColors[i % matColors.length] },
       symbol: 'circle',
       symbolSize: 4,
+      lineStyle: { width: 2 },
+      itemStyle: { color: AP_COLORS[i % AP_COLORS.length] },
     }))
     apCompareChart.setOption({
-      grid: { left: 40, right: 15, top: 30, bottom: 50 },
-      legend: { type: 'scroll', bottom: 0, textStyle: { fontSize: 9 }, itemWidth: 10, itemHeight: 8, formatter: n => n.length > 12 ? n.slice(0, 12) + '..' : n },
-      xAxis: { type: 'category', data: allDates, axisLabel: { fontSize: 10, color: '#888' } },
-      yAxis: { type: 'value', axisLabel: { fontSize: 10, color: '#888', formatter: v => v + '%' }, splitLine: { lineStyle: { type: 'dashed', color: '#f0f0f0' } } },
+      grid: { left: 45, right: 15, top: 30, bottom: 55 },
+      legend: { type: 'scroll', bottom: 0, textStyle: { fontSize: 10, color: '#888' }, itemWidth: 12, itemHeight: 8 },
+      xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 10, color: '#8C8C8C' }, axisLine: { lineStyle: { color: '#F0F1F3' } } },
+      yAxis: { type: 'value', axisLabel: { fontSize: 10, color: '#8C8C8C', formatter: v => v + '%' }, splitLine: { lineStyle: { color: '#F5F6F8', type: 'dashed' } } },
       tooltip: { trigger: 'axis', backgroundColor: 'rgba(26,26,46,.92)', borderColor: 'transparent', textStyle: { color: '#fff', fontSize: 11 } },
-      series,
-    })
-  } else if (apCompareRef.value && cd.drivers?.labels?.length) {
-    // 通用驱动因子归因
-    if (apCompareChart) apCompareChart.dispose()
-    apCompareChart = echarts.init(apCompareRef.value)
-    const dr = cd.drivers
-    const changeRates = dr.labels.map((_, i) => {
-      const t = dr.today[i], y = dr.yesterday[i]
-      return y > 0 ? parseFloat(((t - y) / y * 100).toFixed(1)) : 0
-    })
-    apCompareChart.setOption({
-      grid: { left: 70, right: 50, top: 8, bottom: 28 },
-      xAxis: { type: 'value', axisLabel: { fontSize: 10, color: '#8C8C8C', formatter: v => v + '%' }, splitLine: { lineStyle: { color: '#F5F6F8', type: 'dashed' } } },
-      yAxis: { type: 'category', data: dr.labels, axisLabel: { fontSize: 11, color: '#333' }, axisTick: { show: false }, axisLine: { lineStyle: { color: '#F0F1F3' } } },
-      tooltip: { trigger: 'axis', backgroundColor: 'rgba(26,26,46,.92)', borderColor: 'transparent', textStyle: { color: '#fff', fontSize: 11 }, formatter: p => { const i = p[0].dataIndex; return `<b>${dr.labels[i]}</b><br/>今日: ${dr.today[i].toLocaleString()}<br/>昨日: ${dr.yesterday[i].toLocaleString()}<br/>变化: ${changeRates[i]>0?'+':''}${changeRates[i]}%` } },
-      series: [{
-        type: 'bar', data: changeRates.map((v, i) => ({
-          value: v,
-          itemStyle: { color: v >= 0 ? '#00B96B' : '#FF4D4F', borderRadius: v >= 0 ? [0, 4, 4, 0] : [4, 0, 0, 4] }
-        })),
-        barWidth: '50%',
-        label: { show: true, position: 'right', fontSize: 10, formatter: p => (p.value > 0 ? '+' : '') + p.value + '%' }
-      }]
+      series
     })
   }
 
@@ -569,17 +664,52 @@ const renderApCharts = () => {
     if (apBreakdownChart) apBreakdownChart.dispose()
     apBreakdownChart = echarts.init(apBreakdownRef.value)
     const bd = cd.breakdown
-    const names = bd.map(b => b.name.length > 8 ? b.name.slice(0, 8) + '..' : b.name)
-    const values = bd.map(b => b.value)
+    const reversedBd = [...bd].reverse()
+    const revNames = reversedBd.map(b => {
+      const id4 = b.id ? String(b.id).slice(-4) : ''
+      const parts = b.name.replace(/\(.*?\)/g, '').split('-').filter(Boolean)
+      const last = parts[parts.length - 1] || b.name
+      return (last.length > 6 ? last.slice(0, 6) : last) + (id4 ? '-' + id4 : '')
+    })
+    const revValues = reversedBd.map(b => b.value)
+    // 迷你sparkline数据
+    const sparkSeries = reversedBd.map((b, i) => {
+      if (!b.trend || b.trend.length < 2) return null
+      // 将趋势值映射到对应y轴位置附近
+      const trendLen = b.trend.length
+      return {
+        type: 'line', xAxisIndex: 1, yAxisIndex: 1,
+        data: b.trend.map((v, j) => [j, i + (v > 0 ? (v - Math.min(...b.trend)) / (Math.max(...b.trend) - Math.min(...b.trend) || 1) * 0.35 - 0.17 : 0)]),
+        smooth: true, symbol: 'none', lineStyle: { width: 1.5, color: AP_COLORS[i % AP_COLORS.length], opacity: 0.6 },
+        silent: true, z: 10,
+      }
+    }).filter(Boolean)
     apBreakdownChart.setOption({
-      grid: { left: 80, right: 50, top: 8, bottom: 28 },
-      xAxis: { type: 'value', axisLabel: { fontSize: 10, color: '#8C8C8C', formatter: v => fmtAxis(v) }, splitLine: { lineStyle: { color: '#F5F6F8', type: 'dashed' } } },
-      yAxis: { type: 'category', data: names.reverse(), axisLabel: { fontSize: 11, color: '#333' }, axisTick: { show: false }, axisLine: { lineStyle: { color: '#F0F1F3' } } },
-      tooltip: { trigger: 'axis', backgroundColor: 'rgba(26,26,46,.92)', borderColor: 'transparent', textStyle: { color: '#fff', fontSize: 11 }, formatter: p => { const item = bd[bd.length - 1 - p[0].dataIndex]; return `<b>${item.name}</b><br/>${metricTitle}: ${fmtVal(item.value)}` } },
+      grid: [
+        { left: 70, right: 50, top: 8, bottom: 28 },
+      ],
+      xAxis: [
+        { type: 'value', axisLabel: { fontSize: 10, color: '#8C8C8C', formatter: v => fmtAxis(v) }, splitLine: { lineStyle: { color: '#F5F6F8', type: 'dashed' } } },
+        { type: 'value', show: false, min: 0, max: 6, gridIndex: 0 },
+      ],
+      yAxis: [
+        { type: 'category', data: revNames, axisLabel: { fontSize: 11, color: '#333' }, axisTick: { show: false }, axisLine: { lineStyle: { color: '#F0F1F3' } } },
+        { type: 'value', show: false, min: -0.5, max: reversedBd.length - 0.5, gridIndex: 0 },
+      ],
+      tooltip: { trigger: 'axis', backgroundColor: 'rgba(26,26,46,.92)', borderColor: 'transparent', textStyle: { color: '#fff', fontSize: 11 },
+        formatter: p => {
+          const idx = p[0]?.dataIndex
+          if (idx === undefined) return ''
+          const item = reversedBd[idx]
+          let tip = '<b>' + item.name + '</b><br/>' + metricTitle + ': ' + fmtVal(item.value)
+          if (item.trend?.length) tip += '<br/>7天: ' + item.trend.map(v => fmtVal(v)).join(', ')
+          return tip
+        }
+      },
       series: [{
-        type: 'bar', data: [...values].reverse().map((v, i) => ({ value: v, itemStyle: { color: AP_COLORS[(bd.length - 1 - i) % AP_COLORS.length], borderRadius: [0, 4, 4, 0] } })),
-        barWidth: '55%',
-        label: { show: true, position: 'right', fontSize: 10, formatter: p => fmtVal(p.value) }
+        type: 'bar', data: revValues.map((v, i) => ({ value: v, itemStyle: { color: AP_COLORS[i % AP_COLORS.length], borderRadius: [0, 4, 4, 0] } })),
+        barWidth: '50%',
+        label: { show: true, position: 'right', fontSize: 10, formatter: p => { if (p.value === 0) return '-'; const item = reversedBd[p.dataIndex]; if (metricKey === 'ctr' && item && !item.hasCtr) return '¥' + p.value.toFixed(0) + '/转化'; return fmtVal(p.value) } }
       }]
     })
   }
@@ -822,6 +952,7 @@ const loadData = async () => {
     if (realtimeRes.status === 'fulfilled') {
       topCreatives.value = realtimeRes.value.data?.top_creatives || []
       lastSyncTime.value = realtimeRes.value.data?.last_sync || ''
+      coveragePct.value = realtimeRes.value.data?.coverage_pct || 0
     } else {
       console.error('realtime failed', realtimeRes.reason)
     }
@@ -845,7 +976,7 @@ const loadProductTrend = async () => {
   } catch (e) { console.error(e) } finally { trendLoading.value = false }
 }
 
-const loadAll = () => { loadData(); loadProductTrend() }
+const loadAll = () => { loadData(); loadProductTrend(); loadChannelSummary() }
 
 const renderCostChart = (trend) => {
   if (!costChart || !trend.length) return
@@ -974,20 +1105,155 @@ onUnmounted(() => {
 <style scoped>
 .dash { padding-bottom: 8px; }
 
-/* ===== 日期筛选行 ===== */
-.dash-filter {
+/* ===== 实时数据 Hero（参考聚水潭风格） ===== */
+.dash-hero { margin-bottom: 14px; }
+.dash-hero__top {
   display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 14px; padding: 0 2px;
+  margin-bottom: 12px; padding: 0 2px;
 }
-.dash-filter__label { font-size: 11px; color: var(--text-hint); margin-right: 4px; }
-.dash-filter__sync-main { font-size: 14px; font-weight: 600; color: var(--text-secondary); }
-.dash-filter__value { font-size: 13px; font-weight: 600; color: var(--text-secondary); }
-.dash-filter__right { display: flex; gap: 4px; }
-.dash-filter__btn {
-  padding: 4px 10px; border: 1px solid var(--border); border-radius: 100px;
-  background: #fff; font-size: 11px; color: var(--text-secondary); cursor: pointer; transition: all 0.15s;
+.dash-hero__title {
+  font-size: 16px; font-weight: 700; color: #1F2937; margin: 0;
+  letter-spacing: .5px;
 }
-.dash-filter__btn.active { background: var(--c-primary); color: #fff; border-color: var(--c-primary); }
+.dash-hero__tabs { display: flex; gap: 4px; }
+.dash-hero__tab {
+  padding: 5px 12px; border: 1px solid #E5E7EB; border-radius: 100px;
+  background: #fff; font-size: 12px; color: #4B5563;
+  cursor: pointer; transition: all .15s;
+}
+.dash-hero__tab.active {
+  background: #1677FF; color: #fff; border-color: #1677FF;
+  box-shadow: 0 2px 6px rgba(22,119,255,.25);
+}
+.dash-hero__cards {
+  display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px;
+}
+.hero-card {
+  border-radius: 16px;
+  padding: 14px 14px 16px;
+  color: #fff;
+  position: relative; overflow: hidden;
+  min-height: 92px;
+  display: flex; flex-direction: column; justify-content: space-between;
+}
+.hero-card::before {
+  content: ''; position: absolute; top: -20px; right: -20px;
+  width: 80px; height: 80px; border-radius: 50%;
+  background: rgba(255,255,255,.12); pointer-events: none;
+}
+.hero-card::after {
+  content: ''; position: absolute; bottom: -30px; left: -10px;
+  width: 90px; height: 90px; border-radius: 50%;
+  background: rgba(255,255,255,.08); pointer-events: none;
+}
+.hero-card--blue {
+  background: linear-gradient(135deg, #2D8CFF 0%, #0F5DDC 100%);
+  box-shadow: 0 6px 16px rgba(22,119,255,.32);
+}
+.hero-card--pink {
+  background: linear-gradient(135deg, #FF9ECB 0%, #E85C9C 100%);
+  box-shadow: 0 6px 16px rgba(232,92,156,.28);
+}
+.hero-card--red {
+  background: linear-gradient(135deg, #FF8A8F 0%, #E85660 100%);
+  box-shadow: 0 6px 16px rgba(232,86,96,.28);
+}
+.hero-card__label {
+  font-size: 12px; color: rgba(255,255,255,.92);
+  font-weight: 500; letter-spacing: .3px;
+  position: relative; z-index: 1;
+}
+.hero-card__value {
+  font-size: 26px; font-weight: 800; color: #fff;
+  line-height: 1.1; letter-spacing: .5px;
+  text-shadow: 0 1px 2px rgba(0,0,0,.06);
+  position: relative; z-index: 1;
+}
+.hero-card__sym {
+  font-size: 16px; font-weight: 700; margin-right: 1px;
+  opacity: .92;
+}
+@media (min-width: 768px) {
+  .dash-hero__title { font-size: 18px; }
+  .dash-hero__tab { font-size: 13px; padding: 6px 14px; }
+  .hero-card { padding: 18px 18px 20px; min-height: 110px; border-radius: 18px; }
+  .hero-card__label { font-size: 13px; }
+  .hero-card__value { font-size: 32px; }
+  .hero-card__sym { font-size: 18px; }
+}
+
+/* ===== 渠道汇总（折叠卡片 · 钉钉风格） ===== */
+.ch-summary { margin-bottom: 14px; }
+.ch-card {
+  background: #fff; border: 1px solid #E8ECF0; border-radius: 8px;
+  margin-bottom: 8px; overflow: hidden; transition: box-shadow .15s;
+}
+.ch-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,.04); }
+.ch-card__head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; cursor: pointer; user-select: none;
+}
+.ch-card__icon {
+  width: 30px; height: 30px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 700; flex-shrink: 0;
+}
+.ch-card__info { flex: 1; min-width: 0; overflow: hidden; }
+.ch-card__name { font-size: 14px; font-weight: 600; color: #222; line-height: 1.3; }
+.ch-card__sub {
+  font-size: 10px; color: #8C8C8C; margin-top: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ch-card__total { text-align: right; flex-shrink: 0; }
+.ch-card__total-val { font-size: 15px; font-weight: 700; color: #1677FF; line-height: 1.2; white-space: nowrap; }
+.ch-card__total-label { font-size: 10px; color: #8C8C8C; margin-top: 1px; }
+.ch-card__arrow { transition: transform .2s; flex-shrink: 0; margin-left: 2px; }
+.ch-card__arrow--open { transform: rotate(180deg); }
+.ch-card__body { padding: 0 12px 6px; border-top: 1px solid #F4F5F7; }
+.ch-shop {
+  padding: 10px 0;
+  border-bottom: 1px dashed #F0F1F3;
+}
+.ch-shop:last-child { border-bottom: none; }
+.ch-shop__name {
+  font-size: 13px; color: #222; font-weight: 500; margin-bottom: 6px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ch-shop__metrics {
+  display: flex; gap: 8px; flex-wrap: wrap;
+}
+.ch-shop__col {
+  flex: 1 1 auto; min-width: 0;
+  display: inline-flex; align-items: baseline; gap: 5px;
+  white-space: nowrap;
+}
+.ch-shop__col-label {
+  font-size: 11px; color: #8C8C8C; flex-shrink: 0;
+}
+.ch-shop__col-val {
+  font-size: 14px; font-weight: 600; color: #1F2937;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.ch-shop__col-val--primary { color: #1677FF; }
+.roi-good { color: #00B96B; }
+.roi-warn { color: #FA8C16; }
+.roi-bad { color: #FF4D4F; }
+.ch-empty { padding: 20px 0; text-align: center; color: #BFBFBF; font-size: 12px; }
+@media (min-width: 768px) {
+  .ch-card__head { padding: 12px 14px; gap: 10px; }
+  .ch-card__icon { width: 32px; height: 32px; font-size: 15px; }
+  .ch-card__name { font-size: 15px; }
+  .ch-card__sub { font-size: 11px; }
+  .ch-card__total-val { font-size: 17px; }
+  .ch-card__body { padding: 0 14px 6px; }
+  .ch-shop {
+    padding: 10px 0; display: flex; align-items: center; gap: 16px;
+  }
+  .ch-shop__name { flex: 1; margin-bottom: 0; font-size: 14px; }
+  .ch-shop__metrics { flex: 2; max-width: 560px; gap: 20px; flex-wrap: nowrap; justify-content: flex-end; }
+  .ch-shop__col { flex: 0 0 auto; }
+  .ch-shop__col-val { font-size: 15px; }
+}
 
 /* ===== 核心指标网格 ===== */
 .stat-grid {
@@ -1269,6 +1535,14 @@ onUnmounted(() => {
   .stat-grid { grid-template-columns: repeat(6, 1fr); }
 }
 
+.dt-card__coverage {
+  font-size: 12px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #fff7e6;
+  margin-left: 8px;
+  cursor: help;
+}
 .dt-card__sync-time { font-size: 11px; color: #8c8c8c; margin-left: auto; font-weight: 400; }
 .rank-item__yesterday { font-size: 10px; color: #8c8c8c; text-align: right; margin-top: 2px; }
 .rank-new { background: #ff4d4f !important; color: #fff !important; font-size: 10px; padding: 1px 5px; border-radius: 3px; font-weight: 600; }
@@ -1318,4 +1592,14 @@ onUnmounted(() => {
   from { transform: translateY(100%); }
   to { transform: translateY(0); }
 }
+.low-ctr-list { display: flex; flex-direction: column; gap: 8px; }
+.low-ctr-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: #FFF2F0; border-radius: 8px; border-left: 3px solid #FF4D4F; }
+.low-ctr-rank { width: 22px; height: 22px; border-radius: 50%; background: #FF4D4F; color: #fff; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.low-ctr-info { flex: 1; min-width: 0; }
+.low-ctr-name { font-size: 13px; font-weight: 500; color: #333; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.low-ctr-metrics { font-size: 11px; color: #888; margin-top: 3px; display: flex; gap: 12px; }
+.low-ctr-metrics b { color: #555; }
+.low-ctr-val { text-align: right; flex-shrink: 0; }
+.low-ctr-ctr { font-size: 16px; font-weight: 700; }
+.low-ctr-gap { font-size: 11px; color: #FF7875; margin-top: 2px; }
 </style>

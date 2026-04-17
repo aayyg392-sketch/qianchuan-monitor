@@ -23,6 +23,8 @@ router.get('/', auth(), async (req, res) => {
   };
   const orderClause = sortMap[sort_by] || 'total_cost DESC';
 
+  const aw = req.accWhere || '';
+  const ap = req.accParams || [];
   try {
     let where = 'stat_date BETWEEN ? AND ?';
     const params = [start_date, end_date];
@@ -31,6 +33,7 @@ router.get('/', auth(), async (req, res) => {
       where += ' AND (title LIKE ? OR material_id LIKE ?)';
       params.push(`%${keyword}%`, `%${keyword}%`);
     }
+    if (aw) { where += aw; params.push(...ap); }
 
     const [rows] = await db.query(
       `SELECT material_id, MAX(title) AS title, MAX(cover_url) AS cover_url, MAX(video_url) AS video_url,
@@ -83,6 +86,8 @@ router.get('/summary-stats', auth(), async (req, res) => {
   const prevWeekEnd = dayjs().subtract(7, 'day').format('YYYY-MM-DD');
 
   try {
+    const aw = req.accWhere || '';
+    const ap = req.accParams || [];
     // 通用聚合
     const queryPeriod = async (start, end) => {
       const [[r]] = await db.query(
@@ -90,7 +95,7 @@ router.get('/summary-stats', auth(), async (req, res) => {
           CASE WHEN SUM(cost) > 0 THEN SUM(pay_order_amount) / SUM(cost) ELSE 0 END AS roi,
           CASE WHEN SUM(product_show_count) > 0 THEN SUM(product_click_count) / SUM(product_show_count) ELSE 0 END AS ctr,
           COUNT(DISTINCT material_id) AS material_count
-         FROM qc_material_stats WHERE stat_date BETWEEN ? AND ? AND cost > 0`, [start, end]
+         FROM qc_material_stats WHERE stat_date BETWEEN ? AND ? AND cost > 0${aw}`, [start, end, ...ap]
       );
       return {
         cost: parseFloat(r.cost) || 0,

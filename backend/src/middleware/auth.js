@@ -21,13 +21,18 @@ const auth = (roles = []) => {
           req.accParams = [];
         } else {
           const qcAccounts = userPerms.ad_accounts?.qianchuan || [];
-          if (!qcAccounts.includes('*') && qcAccounts.length > 0) {
+          if (qcAccounts.includes('*')) {
+            req.accountFilter = null;
+            req.accWhere = '';
+            req.accParams = [];
+          } else if (qcAccounts.length > 0) {
             req.accountFilter = qcAccounts;
             req.accWhere = ' AND advertiser_id IN (' + qcAccounts.map(() => '?').join(',') + ')';
             req.accParams = [...qcAccounts];
           } else {
-            req.accountFilter = null;
-            req.accWhere = '';
+            // 非超管且未分配账户 → 不可见任何账户数据
+            req.accountFilter = [];
+            req.accWhere = ' AND 1=0';
             req.accParams = [];
           }
         }

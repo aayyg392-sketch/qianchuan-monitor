@@ -66,6 +66,8 @@ app.use('/api/adq', require('./routes/adq'));
 app.use('/api/adq-dash', require('./routes/adq-dashboard'));
 app.use('/api/adq-comments', require('./routes/adq-comments'));
 app.use('/api/adq-pitcher', require('./routes/adq-pitcher'));
+// AI投放引擎（独立模块）
+app.use('/api/ai-engine', require('./ai-engine'));
 // 跨境TikTok模块（独立路由组）
 app.use('/api/tiktok', require('./routes/tiktok'));
 app.use('/api/tt-materials', require('./routes/tt-materials'));

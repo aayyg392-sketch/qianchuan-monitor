@@ -236,10 +236,15 @@ router.get('/rooms', auth(), async (req, res) => {
   try {
     let accFilter = '';
     const accP = [];
+    // 非超管：仅按 role_live_rooms 过滤直播间
     if (req.accountFilter) {
-      // 包含已关联账户的直播间 + 未关联账户的直播间（兼容老数据）
-      accFilter = ' AND (advertiser_id IN (' + req.accountFilter.map(() => '?').join(',') + ') OR advertiser_id IS NULL)';
-      accP.push(...req.accountFilter);
+      const liveRoomIds = req.rbac?.live_rooms || [];
+      if (liveRoomIds.length > 0) {
+        accFilter = ' AND r.id IN (' + liveRoomIds.map(() => '?').join(',') + ')';
+        accP.push(...liveRoomIds);
+      } else {
+        accFilter = ' AND 1=0';
+      }
     }
     const [rows] = await db.query(
       `SELECT r.*, a.advertiser_name FROM live_rooms r LEFT JOIN qc_accounts a ON r.advertiser_id = a.advertiser_id WHERE r.status = 'active'${accFilter} ORDER BY r.is_living DESC, r.created_at DESC`,

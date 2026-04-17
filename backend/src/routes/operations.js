@@ -507,7 +507,7 @@ router.get('/ai-reply/config', auth(), async (req, res) => {
 // 更新AI回复配置
 router.put('/ai-reply/config', auth(), async (req, res) => {
   try {
-    const { enabled, pull_interval_minutes, auto_reply_categories, reply_style, max_reply_length } = req.body;
+    const { enabled, pull_interval_minutes, auto_reply_categories, reply_style, max_reply_length, auto_hide_enabled } = req.body;
 
     let [[config]] = await db.query(`SELECT id FROM ops_ai_reply_config ORDER BY id LIMIT 1`);
     if (!config) {
@@ -518,6 +518,7 @@ router.put('/ai-reply/config', auth(), async (req, res) => {
     const fields = [];
     const values = [];
     if (enabled !== undefined) { fields.push('enabled=?'); values.push(enabled ? 1 : 0); }
+    if (auto_hide_enabled !== undefined) { fields.push('auto_hide_enabled=?'); values.push(auto_hide_enabled ? 1 : 0); }
     if (pull_interval_minutes !== undefined) { fields.push('pull_interval_minutes=?'); values.push(pull_interval_minutes); }
     if (auto_reply_categories !== undefined) { fields.push('auto_reply_categories=?'); values.push(JSON.stringify(auto_reply_categories)); }
     if (reply_style !== undefined) { fields.push('reply_style=?'); values.push(reply_style); }

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
-const { auth } = require('../middleware/auth');
+const auth = require('../middleware/auth');
 const logger = require('../logger');
 const path = require('path');
 const fs = require('fs');

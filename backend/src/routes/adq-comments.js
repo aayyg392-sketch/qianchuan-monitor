@@ -5,6 +5,7 @@
 const router = require('express').Router();
 const db = require('../db');
 const logger = require('../logger');
+const auth = require('../middleware/auth');
 const adq = require('../services/adq-sync');
 
 // 自动回复规则表
@@ -32,7 +33,7 @@ router.use(async (req, res, next) => {
 /**
  * GET /api/adq-comments/list — 拉取评论列表
  */
-router.get('/list', async (req, res) => {
+router.get('/list', auth(), async (req, res) => {
   try {
     const { account_db_id, finder_ad_object_id, keyword, page, page_size } = req.query;
     const [rows] = await db.query('SELECT * FROM adq_accounts WHERE id = ? AND status = 1', [account_db_id]);
@@ -55,7 +56,7 @@ router.get('/list', async (req, res) => {
 /**
  * POST /api/adq-comments/reply — 回复评论
  */
-router.post('/reply', async (req, res) => {
+router.post('/reply', auth(), async (req, res) => {
   try {
     const { account_db_id, finder_ad_object_id, comment_id, content } = req.body;
     const [rows] = await db.query('SELECT * FROM adq_accounts WHERE id = ? AND status = 1', [account_db_id]);
@@ -73,7 +74,7 @@ router.post('/reply', async (req, res) => {
 /**
  * POST /api/adq-comments/delete — 删除评论
  */
-router.post('/delete', async (req, res) => {
+router.post('/delete', auth(), async (req, res) => {
   try {
     const { account_db_id, finder_ad_object_id, comment_id } = req.body;
     const [rows] = await db.query('SELECT * FROM adq_accounts WHERE id = ? AND status = 1', [account_db_id]);
@@ -91,7 +92,7 @@ router.post('/delete', async (req, res) => {
 /**
  * POST /api/adq-comments/featured — 精选/取消精选评论
  */
-router.post('/featured', async (req, res) => {
+router.post('/featured', auth(), async (req, res) => {
   try {
     const { account_db_id, finder_ad_object_id, comment_id, op_type } = req.body;
     const [rows] = await db.query('SELECT * FROM adq_accounts WHERE id = ? AND status = 1', [account_db_id]);
@@ -111,7 +112,7 @@ router.post('/featured', async (req, res) => {
 /**
  * GET /api/adq-comments/rules — 获取自动回复规则
  */
-router.get('/rules', async (req, res) => {
+router.get('/rules', auth(), async (req, res) => {
   try {
     const { account_db_id } = req.query;
     const [rows] = await db.query(
@@ -127,7 +128,7 @@ router.get('/rules', async (req, res) => {
 /**
  * POST /api/adq-comments/rules — 添加自动回复规则
  */
-router.post('/rules', async (req, res) => {
+router.post('/rules', auth(), async (req, res) => {
   try {
     const { account_db_id, keyword, sentiment, reply_content } = req.body;
     if (!reply_content) return res.json({ code: -1, msg: '回复内容不能为空' });
@@ -144,7 +145,7 @@ router.post('/rules', async (req, res) => {
 /**
  * DELETE /api/adq-comments/rules/:id — 删除规则
  */
-router.delete('/rules/:id', async (req, res) => {
+router.delete('/rules/:id', auth(), async (req, res) => {
   try {
     await db.query('DELETE FROM adq_comment_reply_rules WHERE id = ?', [req.params.id]);
     res.json({ code: 0, msg: '规则删除成功' });

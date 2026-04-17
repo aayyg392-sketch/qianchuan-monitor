@@ -25,13 +25,14 @@
           <div class="card-head"><span class="card-label">整体客单价</span><span class="card-chg" :class="cc(total.changes.avg)">{{ ct(total.changes.avg) }}</span></div>
           <div class="card-val">¥{{ fmt(total.today.avg) }}</div>
         </div>
+
         <div class="card">
-          <div class="card-head"><span class="card-label">访客数</span></div>
-          <div class="card-val dim">-</div>
+          <div class="card-head"><span class="card-label">短视频GMV</span><span class="card-chg" :class="cc(total.changes.shortVideo_gmv)">{{ ct(total.changes.shortVideo_gmv) }}</span></div>
+          <div class="card-val" style="color:#52c41a">¥{{ fmt(totalChannelGmv('shortVideo')) }}</div>
         </div>
         <div class="card">
-          <div class="card-head"><span class="card-label">转化率</span></div>
-          <div class="card-val dim">-</div>
+          <div class="card-head"><span class="card-label">直播GMV</span><span class="card-chg" :class="cc(total.changes.live_gmv)">{{ ct(total.changes.live_gmv) }}</span></div>
+          <div class="card-val" style="color:#fa8c16">¥{{ fmt(totalChannelGmv('live')) }}</div>
         </div>
         <div class="card">
           <div class="card-head"><span class="card-label">付费销售</span><span class="card-chg" :class="cc(total.changes.paid_sales)">{{ ct(total.changes.paid_sales) }}</span></div>
@@ -59,11 +60,11 @@
               <th>订单</th>
               <th>退款额</th>
               <th>客单价</th>
-              <th>访客</th>
-              <th>转化率</th>
+              <th>短视频GMV</th>
+              <th>直播GMV</th>
+              <th>商品卡</th>
               <th>付费销售</th>
               <th>磁力消耗</th>
-              <th>待办</th>
             </tr>
           </thead>
           <tbody>
@@ -88,8 +89,18 @@
                 <span class="v">¥{{ fmt(shop.today.avg) }}</span>
                 <span class="c" :class="cc(shop.changes.avg)">{{ ct(shop.changes.avg) }}</span>
               </td>
-              <td><span class="v na">-</span></td>
-              <td><span class="v na">-</span></td>
+              <td>
+                <span class="v" style="color:#52c41a">¥{{ fmt(channelGmv(shop, 'shortVideo')) }}</span>
+                <span class="c" :class="cc(channelChange(shop, 'shortVideo'))">{{ ct(channelChange(shop, 'shortVideo')) }}</span>
+              </td>
+              <td>
+                <span class="v" style="color:#fa8c16">¥{{ fmt(channelGmv(shop, 'live')) }}</span>
+                <span class="c" :class="cc(channelChange(shop, 'live'))">{{ ct(channelChange(shop, 'live')) }}</span>
+              </td>
+              <td>
+                <span class="v" style="color:#722ed1">¥{{ fmt(channelGmv(shop, 'itemCard')) }}</span>
+                <span class="c" :class="cc(channelChange(shop, 'itemCard'))">{{ ct(channelChange(shop, 'itemCard')) }}</span>
+              </td>
               <td>
                 <span class="v">¥{{ fmt(shop.today.paid_sales) }}</span>
                 <span class="c" :class="cc(shop.changes.paid_sales)">{{ ct(shop.changes.paid_sales) }}</span>
@@ -98,10 +109,7 @@
                 <span class="v">¥{{ fmt(shop.today.ad_cost) }}</span>
                 <span class="c" :class="cc(shop.changes.ad_cost, true)">{{ ct(shop.changes.ad_cost) }}</span>
               </td>
-              <td class="col-tags">
-                <span class="tag tw" v-if="shop.pending.ship > 0">发{{ shop.pending.ship }}</span>
-                <span class="tag te" v-if="shop.pending.refund > 0">退{{ shop.pending.refund }}</span>
-              </td>
+
             </tr>
             <!-- 汇总行（底部） -->
             <tr class="row-total">
@@ -110,11 +118,20 @@
               <td><span class="v">{{ total.today.orders }}</span></td>
               <td><span class="v">¥{{ fmt(total.today.refund_amt) }}</span></td>
               <td><span class="v">¥{{ fmt(total.today.avg) }}</span></td>
-              <td></td>
-              <td></td>
+              <td>
+                <span class="v" style="color:#52c41a">¥{{ fmt(totalChannelGmv('shortVideo')) }}</span>
+                <span class="c" :class="cc(total.changes.shortVideo_gmv)">{{ ct(total.changes.shortVideo_gmv) }}</span>
+              </td>
+              <td>
+                <span class="v" style="color:#fa8c16">¥{{ fmt(totalChannelGmv('live')) }}</span>
+                <span class="c" :class="cc(total.changes.live_gmv)">{{ ct(total.changes.live_gmv) }}</span>
+              </td>
+              <td>
+                <span class="v" style="color:#722ed1">¥{{ fmt(totalChannelGmv('itemCard')) }}</span>
+                <span class="c" :class="cc(total.changes.itemCard_gmv)">{{ ct(total.changes.itemCard_gmv) }}</span>
+              </td>
               <td><span class="v">¥{{ fmt(total.today.paid_sales) }}</span></td>
               <td><span class="v">¥{{ fmt(total.today.ad_cost) }}</span></td>
-              <td></td>
             </tr>
           </tbody>
         </table>
@@ -140,6 +157,21 @@ const todayStr = (() => {
   return `${d.getMonth()+1}/${d.getDate()} ${'日一二三四五六'[d.getDay()]}`
 })()
 
+function channelGmv(shop, channel) {
+  return shop.channels?.[channel]?.gmv || 0
+}
+function channelGmvYest(shop, channel) {
+  return shop.channels_yesterday?.[channel]?.gmv || 0
+}
+function channelChange(shop, channel) {
+  const cur = channelGmv(shop, channel)
+  const prev = channelGmvYest(shop, channel)
+  if (!prev || prev === 0) return cur > 0 ? 100 : 0
+  return Math.round(((cur - prev) / prev) * 1000) / 10
+}
+function totalChannelGmv(channel) {
+  return shops.value.reduce((sum, s) => sum + (s.channels?.[channel]?.gmv || 0), 0)
+}
 function fmt(v) {
   const n = Number(v) || 0
   if (n >= 10000) return (n / 10000).toFixed(2) + '万'

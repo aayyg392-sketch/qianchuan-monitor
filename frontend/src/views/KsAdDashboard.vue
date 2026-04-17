@@ -1,33 +1,5 @@
 <template>
   <div class="page">
-    <!-- 店铺筛选 + 授权按钮 -->
-    <div class="top-bar">
-      <div class="shop-filter" v-if="shopList.length > 1">
-        <span class="shop-filter-label">店铺</span>
-        <select v-model="currentShopId" class="shop-select" @change="onShopChange">
-          <option value="">全部店铺</option>
-          <option v-for="s in shopList" :key="s.shop_id" :value="s.shop_id">{{ s.shop_name }}</option>
-        </select>
-      </div>
-      <button class="auth-btn" @click="showAuthModal = true">+ 授权新账号</button>
-    </div>
-
-    <!-- 授权弹窗：选择关联店铺 -->
-    <div v-if="showAuthModal" class="drawer-mask" @click.self="showAuthModal = false">
-      <div class="rename-modal">
-        <div class="rename-title">授权快手磁力账号</div>
-        <div style="font-size:12px;color:#86909C;margin-bottom:12px">选择要关联的店铺，授权后该账号下的广告主将绑定到此店铺</div>
-        <select v-model="authShopId" class="shop-select" style="width:100%;margin-bottom:16px">
-          <option value="">不关联店铺</option>
-          <option v-for="s in shopList" :key="s.shop_id" :value="s.shop_id">{{ s.shop_name }}</option>
-        </select>
-        <div class="rename-actions">
-          <button class="rename-cancel" @click="showAuthModal = false">取消</button>
-          <button class="rename-ok" @click="goAuth">前往授权</button>
-        </div>
-      </div>
-    </div>
-
     <!-- 数据概览 -->
     <div v-if="overviewCards.length" class="overview-bar">
       <div class="ov-item" v-for="card in overviewCards" :key="card.key">
@@ -77,10 +49,15 @@
             </div>
             <div class="acc-text">
               <div class="acc-name" :title="item.advertiser_name">
-                {{ item.advertiser_name || '未命名' }}
-                <span class="edit-name-btn" @click.stop="openRename(item)" title="修改名称">✎</span>
+                <template v-if="item.advertiser_name && item.advertiser_name !== String(item.advertiser_id)">
+                  {{ item.advertiser_name }}
+                  <span class="edit-name-btn" @click.stop="openRename(item)" title="修改名称">✎</span>
+                </template>
+                <template v-else>
+                  <span class="unnamed-hint" @click.stop="openRename(item)">点击设置名称</span>
+                </template>
               </div>
-              <div class="acc-sub">ID: {{ item.advertiser_id }}<span v-if="item.shop_name" class="shop-tag">{{ item.shop_name }}</span></div>
+              <div class="acc-sub">ID: {{ item.advertiser_id }}<span v-if="item.shop_name" style="margin-left:8px;color:#8c8c8c">| {{ item.shop_name }}</span></div>
             </div>
           </div>
           <span class="col-val blue">¥{{ formatMoney(item.today_cost) }}</span>
@@ -103,9 +80,15 @@
     <!-- 重命名弹窗 -->
     <div v-if="renameVisible" class="drawer-mask" @click.self="renameVisible = false">
       <div class="rename-modal">
-        <div class="rename-title">修改账户名称</div>
+        <div class="rename-title">账户设置</div>
         <div class="rename-id">ID: {{ renameTarget?.advertiser_id }}</div>
-        <input v-model="renameName" class="rename-input" placeholder="请输入账户名称" @keyup.enter="submitRename" />
+        <div class="rename-label">账户名称</div>
+        <input v-model="renameName" class="rename-input" placeholder="请输入账户名称" />
+        <div class="rename-label">关联店铺</div>
+        <select v-model="renameShopId" class="rename-input">
+          <option value="">不关联</option>
+          <option v-for="s in shopList" :key="s.shop_id" :value="s.shop_id">{{ s.shop_name }} ({{ s.shop_id }})</option>
+        </select>
         <div class="rename-actions">
           <button class="rename-cancel" @click="renameVisible = false">取消</button>
           <button class="rename-ok" @click="submitRename" :disabled="!renameName.trim()">确定</button>
@@ -222,8 +205,6 @@ import * as echarts from 'echarts'
 import request from '../utils/request'
 
 // 状态
-const shopList = ref([])
-const currentShopId = ref('')
 const accountList = ref([])
 const loading = ref(false)
 const syncing = ref(false)
@@ -237,9 +218,9 @@ const aiLoading = ref(false)
 const aiResult = ref('')
 const renameVisible = ref(false)
 const renameTarget = ref(null)
+const renameShopId = ref('')
+const shopList = ref([])
 const renameName = ref('')
-const showAuthModal = ref(false)
-const authShopId = ref('')
 
 let chartInstance = null
 
@@ -436,42 +417,16 @@ function renderChart() {
   })
 }
 
-// 前往授权
-async function goAuth() {
-  try {
-    const params = authShopId.value ? { shop_id: authShopId.value } : {}
-    const res = await request.get('/ks-ad/oauth-url', { params })
-    if (res.data?.url) {
-      showAuthModal.value = false
-      window.open(res.data.url, '_blank')
-    } else {
-      alert(res.msg || '获取授权链接失败')
-    }
-  } catch (e) {
-    alert('获取授权链接失败: ' + e.message)
-  }
-}
-
-// 获取店铺列表
-async function fetchShops() {
-  try {
-    const res = await request.get('/ks/accounts')
-    const all = res.data || res || []
-    shopList.value = all.filter(a => a.status === 1)
-  } catch (e) {}
-}
-
-// 店铺切换
-function onShopChange() {
-  fetchOverview()
-}
-
 // 获取概览数据
 async function fetchOverview() {
   loading.value = true
   try {
-    const params = currentShopId.value ? { shop_id: currentShopId.value } : {}
-    const res = await request.get('/ks-ad-dash/overview', { params })
+    // 加载店铺列表
+    try {
+      const shopRes = await request.get('/ks-ad-dash/shops')
+      shopList.value = shopRes?.data || []
+    } catch(e) {}
+    const res = await request.get('/ks-ad-dash/overview')
     if (res.data) {
       overviewCards.value = res.data.cards || []
       accountList.value = res.data.list || []
@@ -541,6 +496,7 @@ async function analyzeAccount() {
 function openRename(item) {
   renameTarget.value = item
   renameName.value = item.advertiser_name || ''
+  renameShopId.value = item.shop_id || ''
   renameVisible.value = true
 }
 
@@ -549,10 +505,16 @@ async function submitRename() {
   try {
     await request.post('/ks-ad/rename', {
       advertiser_id: renameTarget.value.advertiser_id,
-      name: renameName.value.trim()
+      name: renameName.value.trim(),
+      shop_id: renameShopId.value || ''
     })
     const found = accountList.value.find(a => a.advertiser_id === renameTarget.value.advertiser_id)
-    if (found) found.advertiser_name = renameName.value.trim()
+    if (found) {
+      found.advertiser_name = renameName.value.trim()
+      found.shop_id = renameShopId.value || ''
+      const shop = shopList.value.find(s => s.shop_id === renameShopId.value)
+      found.shop_name = shop ? shop.shop_name : ''
+    }
     renameVisible.value = false
   } catch (e) {
     // ignore
@@ -568,7 +530,6 @@ watch(drawerVisible, (val) => {
 })
 
 onMounted(() => {
-  fetchShops()
   fetchOverview()
 })
 </script>
@@ -579,66 +540,6 @@ onMounted(() => {
   max-width: 1400px;
   margin: 0 auto;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-}
-
-/* 顶部栏 */
-.top-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 16px;
-}
-.auth-btn {
-  padding: 7px 16px;
-  border: 1px solid #1677FF;
-  border-radius: 6px;
-  font-size: 13px;
-  color: #1677FF;
-  background: #fff;
-  cursor: pointer;
-  font-weight: 500;
-  transition: 0.2s;
-}
-.auth-btn:hover {
-  background: #1677FF;
-  color: #fff;
-}
-
-/* 店铺筛选 */
-.shop-filter {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 16px;
-}
-.shop-filter-label {
-  font-size: 13px;
-  color: #86909C;
-  font-weight: 500;
-}
-.shop-select {
-  padding: 6px 12px;
-  border: 1px solid #E5E6EB;
-  border-radius: 6px;
-  font-size: 13px;
-  color: #1D2129;
-  background: #fff;
-  outline: none;
-  min-width: 180px;
-}
-.shop-select:focus {
-  border-color: #1677FF;
-  box-shadow: 0 0 0 2px rgba(22,119,255,0.1);
-}
-.shop-tag {
-  display: inline-block;
-  margin-left: 6px;
-  padding: 1px 6px;
-  font-size: 10px;
-  color: #1677FF;
-  background: #E8F3FF;
-  border-radius: 3px;
-  font-weight: 500;
 }
 
 /* 概览横条 */
@@ -1105,5 +1006,29 @@ onMounted(() => {
   .col-hide-m {
     display: none;
   }
+}
+.rename-label {
+  font-size: 13px;
+  color: #666;
+  margin: 12px 0 4px;
+}
+.rename-input select, select.rename-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  font-size: 14px;
+  outline: none;
+  background: #fff;
+  appearance: auto;
+}
+.unnamed-hint {
+  color: #1890ff;
+  cursor: pointer;
+  font-size: 12px;
+  border-bottom: 1px dashed #1890ff;
+}
+.unnamed-hint:hover {
+  color: #40a9ff;
 }
 </style>
