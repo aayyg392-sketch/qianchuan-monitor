@@ -2,8 +2,8 @@
   <div class="xhs-collect">
     <div class="page-header"><h2>小红书中心 · 竞品笔记收集</h2></div>
     <div class="plugin-bar">
-      <span class="pb-title">🧩 采集插件</span>
-      <a class="pb-btn dl" href="/ai-images/xhs-collector.zip" download="xhs-collector.zip">下载插件包</a>
+      <span class="pb-title">🧩 竞品采集插件</span>
+      <a class="pb-btn dl" href="/ai-images/snefe-collector.zip" download="snefe-collector.zip">下载插件包</a>
       <a class="pb-btn" @click="helpOpen = true">安装说明</a>
       <div class="pb-product-sel">
         <span class="pb-sel-label">采集归属产品：</span>
@@ -20,53 +20,6 @@
     </div>
     <a-alert type="info" show-icon style="margin-bottom:16px"
       message="用 Chrome 插件在已登录的小红书页面一键采集（或按下方渠道人工录入）。采集仅获取封面/标题/作者/点赞，完整正文和多图点笔记后「查看原文」。" />
-
-    <!-- 天猫/淘宝/京东图片采集 -->
-    <div class="tb-panel">
-      <div class="tb-header" @click="tbOpen = !tbOpen">
-        <span class="tb-icon">🛒</span>
-        <span class="tb-title">天猫 / 淘宝 / 京东 &nbsp;图片采集</span>
-        <span class="tb-badge" v-if="tbImages.length">{{ tbImages.length }} 张</span>
-        <span class="tb-arrow" :class="{ open: tbOpen }">▾</span>
-      </div>
-
-      <div v-if="tbOpen" class="tb-body">
-        <div class="tb-input-row">
-          <a-input
-            v-model:value="tbUrl"
-            placeholder="粘贴天猫/淘宝/京东商品链接"
-            style="flex:1"
-            allow-clear
-            @pressEnter="doScrape"
-          />
-          <a-select v-model:value="tbProductId" :options="collectProductOpts" style="width:130px" placeholder="归属产品" />
-          <a-button type="primary" :loading="tbLoading" style="background:#ff6900;border-color:#ff6900" @click="doScrape">一键采集</a-button>
-        </div>
-        <div v-if="tbError" class="tb-error">{{ tbError }}</div>
-        <div v-if="tbMsg" class="tb-msg">{{ tbMsg }}</div>
-
-        <div v-if="tbImages.length" class="tb-grid">
-          <div v-for="(img, i) in tbImages" :key="i" class="tb-img-item" :class="{ selected: tbSelected.has(i) }" @click="toggleTbImg(i)">
-            <img :src="img" referrerpolicy="no-referrer" @error="(e) => e.target.parentElement.style.opacity='.3'" />
-            <span class="tb-check" v-if="tbSelected.has(i)">✓</span>
-          </div>
-        </div>
-
-        <div v-if="tbImages.length" class="tb-save-bar">
-          <span class="tb-sel-cnt">已选 {{ tbSelected.size }} / {{ tbImages.length }} 张</span>
-          <a-button size="small" @click="tbSelected.clear(); tbSelected = new Set([...Array(tbImages.length).keys()])">全选</a-button>
-          <a-button size="small" @click="tbSelected = new Set()">清空</a-button>
-          <a-button
-            type="primary"
-            size="small"
-            :loading="tbSaving"
-            :disabled="!tbSelected.size"
-            style="background:#ff6900;border-color:#ff6900"
-            @click="saveTbImages"
-          >💾 保存选中到图库</a-button>
-        </div>
-      </div>
-    </div>
 
     <div class="guide-grid">
       <div class="guide-card">
@@ -182,27 +135,33 @@
       </div>
     </a-modal>
 
-    <a-modal v-model:open="helpOpen" title="采集插件 · 安装与使用说明" :footer="null" :width="600">
+    <a-modal v-model:open="helpOpen" title="竞品采集插件 · 安装与使用说明" :footer="null" :width="620">
       <div class="help-content">
         <h4>一、安装（首次，约 1 分钟）</h4>
         <ol>
-          <li>点上方「下载插件包」，得到 xhs-collector.zip，<b>解压</b>到一个文件夹</li>
+          <li>点上方「下载插件包」，得到 snefe-collector.zip，<b>解压</b>到一个文件夹</li>
           <li>Chrome 地址栏输入 <code>chrome://extensions/</code> 回车</li>
           <li>打开右上角「<b>开发者模式</b>」开关</li>
-          <li>点「<b>加载已解压的扩展程序</b>」，选择解压出的 xhs-collector 文件夹</li>
-          <li>出现「雪玲妃·小红书竞品采集」即安装成功</li>
+          <li>点「<b>加载已解压的扩展程序</b>」，选择解压出的 snefe-collector 文件夹</li>
+          <li>出现「雪玲妃·竞品采集」即安装成功</li>
         </ol>
-        <h4>二、采集使用</h4>
+        <h4>二、小红书笔记采集</h4>
         <ol>
           <li>浏览器登录小红书，搜索或浏览笔记</li>
-          <li><b>点开</b>想采集的笔记查看（插件只采你点开过的，自动抓多图 + 正文全文）</li>
-          <li>页面右下角红色「采集到系统 (N)」显示已采数量</li>
-          <li>点该按钮 → 笔记入库到本页（带封面/标题/作者/点赞/原文）</li>
+          <li><b>点开</b>想采集的笔记（插件自动抓多图 + 正文全文）</li>
+          <li>页面右下角红色「采集到系统 (N)」— 点击即入库</li>
         </ol>
-        <h4>三、注意</h4>
+        <h4>三、淘宝 / 天猫 / 京东图片采集</h4>
+        <ol>
+          <li>在浏览器打开任意淘宝/天猫/京东商品详情页（已登录更好）</li>
+          <li>页面右下角出现橙色「🛒 采集图片 (N)」按钮</li>
+          <li>点击 → 弹出图片预览面板 → 勾选所需图片 → 选择归属产品 → 「保存到图库」</li>
+          <li>图片保存到「小红书图片管理 → 爆款图」分类下</li>
+        </ol>
+        <h4>四、注意</h4>
         <ul>
           <li>插件更新后需重新加载：chrome://extensions → 点插件的刷新图标 ⟳</li>
-          <li>采集走你自己已登录的浏览器，合规、不碰账号密码</li>
+          <li>走已登录的浏览器采集，合规、不碰账号密码</li>
         </ul>
       </div>
     </a-modal>
@@ -317,57 +276,6 @@ function del(c) {
     onOk: async () => { try { await request.delete(`/xhs/competitor/${c.id}`); message.success('已删除'); load() } catch (e) { message.error('删除失败') } }
   })
 }
-// 天猫/淘宝/京东图片采集
-const tbOpen = ref(false)
-const tbUrl = ref('')
-const tbProductId = ref(0)
-const tbLoading = ref(false)
-const tbSaving = ref(false)
-const tbImages = ref([])
-const tbSelected = ref(new Set())
-const tbError = ref('')
-const tbMsg = ref('')
-const tbPlatform = ref('')
-
-async function doScrape() {
-  const url = tbUrl.value.trim()
-  if (!url) { message.warning('请先粘贴商品链接'); return }
-  tbLoading.value = true; tbImages.value = []; tbSelected.value = new Set(); tbError.value = ''; tbMsg.value = ''
-  try {
-    const r = await request.post('/xhs/scrape-taobao', { url })
-    if (r.code === 0) {
-      tbImages.value = r.data || []
-      tbPlatform.value = r.platform || '淘宝/天猫'
-      if (!tbImages.value.length) tbMsg.value = r.msg || '未找到商品图片，建议直接在浏览器打开页面后右键保存图片'
-      else { tbSelected.value = new Set([...Array(tbImages.value.length).keys()]); tbMsg.value = '' }
-    } else { tbError.value = r.msg || '采集失败' }
-  } catch (e) { tbError.value = '采集失败：' + (e.message || '') }
-  tbLoading.value = false
-}
-
-function toggleTbImg(i) {
-  const s = new Set(tbSelected.value)
-  s.has(i) ? s.delete(i) : s.add(i)
-  tbSelected.value = s
-}
-
-async function saveTbImages() {
-  const urls = [...tbSelected.value].map(i => tbImages.value[i]).filter(Boolean)
-  if (!urls.length) return
-  tbSaving.value = true
-  try {
-    const platformLabel = { taobao: '淘宝', tmall: '天猫', jd: '京东' }[tbPlatform.value] || tbPlatform.value || '淘宝/天猫'
-    const r = await request.post('/xhs/save-taobao-images', { urls, product_id: tbProductId.value || 0, source: platformLabel })
-    if (r.code === 0) {
-      message.success(r.msg || `已保存 ${urls.length} 张到图库`)
-      tbSelected.value = new Set()
-      tbImages.value = []
-      tbUrl.value = ''
-    } else message.error(r.msg || '保存失败')
-  } catch (e) { message.error('保存失败：' + e.message) }
-  tbSaving.value = false
-}
-
 onMounted(() => { load(); loadProducts(); loadCollectSetting() })
 </script>
 
@@ -437,26 +345,6 @@ onMounted(() => { load(); loadProducts(); loadCollectSetting() })
 .xhs-note:hover .note-del-btn { opacity: 1; }
 .note-del-btn:hover { background: rgba(245,34,45,.75); }
 
-/* 天猫/淘宝/京东采集区 */
-.tb-panel { border: 1px solid #ffe4cc; border-radius: 10px; margin-bottom: 16px; overflow: hidden; }
-.tb-header { display: flex; align-items: center; gap: 10px; padding: 11px 16px; background: #fff8f2; cursor: pointer; user-select: none; }
-.tb-icon { font-size: 16px; }
-.tb-title { font-size: 14px; font-weight: 600; color: #cc5500; flex: 1; }
-.tb-badge { background: #ff6900; color: #fff; font-size: 11px; padding: 1px 8px; border-radius: 10px; }
-.tb-arrow { color: #999; font-size: 14px; transition: transform .2s; }
-.tb-arrow.open { transform: rotate(180deg); }
-.tb-body { padding: 14px 16px 16px; background: #fff; border-top: 1px solid #ffe4cc; }
-.tb-input-row { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
-.tb-error { color: #f5222d; font-size: 13px; margin-bottom: 8px; }
-.tb-msg { color: #8f959e; font-size: 13px; margin-bottom: 8px; }
-.tb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; margin-bottom: 12px; max-height: 420px; overflow-y: auto; }
-.tb-img-item { border: 2px solid transparent; border-radius: 8px; overflow: hidden; cursor: pointer; position: relative; aspect-ratio: 1; background: #f5f6f8; transition: border-color .15s; }
-.tb-img-item img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.tb-img-item.selected { border-color: #ff6900; }
-.tb-img-item.selected img { opacity: .85; }
-.tb-check { position: absolute; top: 4px; right: 4px; width: 20px; height: 20px; background: #ff6900; color: #fff; border-radius: 50%; font-size: 11px; display: flex; align-items: center; justify-content: center; font-weight: 700; }
-.tb-save-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.tb-sel-cnt { font-size: 13px; color: #666; }
 .add-form label { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 4px; }
 
 /* 小红书详情样式 */

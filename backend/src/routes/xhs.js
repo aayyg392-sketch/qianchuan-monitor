@@ -646,6 +646,37 @@ router.get('/login/check', auth(), async (req, res) => {
   } catch (e) { res.json({ code: 500, msg: e.message }); }
 });
 
+// ─── 插件：商城图片保存（淘宝/天猫/京东，插件直接传 CDN URL 过来）────────────
+router.options('/plugin-shop-images', (req, res) => { pluginCors(res); res.sendStatus(204); });
+router.post('/plugin-shop-images', async (req, res) => {
+  pluginCors(res);
+  try {
+    const { secret, images = [], product_id = 0, source = '电商平台' } = req.body || {};
+    if (secret !== 'xhs-collect-2026') return res.json({ code: 403, msg: '密钥错误' });
+    if (!images.length) return res.json({ code: 400, msg: '没有图片' });
+    try { fs.mkdirSync(AI_IMAGES_DIR, { recursive: true }); } catch (e) {}
+    let saved = 0, failed = 0;
+    const headers = {
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0 Safari/537.36',
+      'Referer': source === '京东' ? 'https://www.jd.com/' : 'https://www.taobao.com/',
+    };
+    for (const cdnUrl of images.slice(0, 30)) {
+      try {
+        const resp = await axios.get(cdnUrl, { responseType: 'arraybuffer', timeout: 15000, headers });
+        const ext = (cdnUrl.match(/\.(jpg|png|jpeg|webp)$/i) || ['', 'jpg'])[1].toLowerCase();
+        const filename = `shopimg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.${ext}`;
+        fs.writeFileSync(path.join(AI_IMAGES_DIR, filename), Buffer.from(resp.data));
+        await db.query(
+          "INSERT INTO xhs_images (type, url, name, product_id, source) VALUES ('hot', ?, ?, ?, ?)",
+          ['/ai-images/' + filename, source + '-' + filename.slice(0, 18), product_id || 0, source]
+        );
+        saved++;
+      } catch (e) { failed++; }
+    }
+    res.json({ code: 0, data: { saved, failed }, msg: `已保存 ${saved} 张` });
+  } catch (e) { res.json({ code: 500, msg: e.message }); }
+});
+
 // ─── 天猫/淘宝/京东图片采集 ─────────────────────────────────────────────────
 
 // 通用图片URL提取
