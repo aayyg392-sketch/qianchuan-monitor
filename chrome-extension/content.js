@@ -37,18 +37,20 @@ function initXhs() {
     updateXhsBtn();
   });
 
-  // 浮动按钮
+  // 浮动按钮 — 始终可见，让用户知道插件已激活
   const btn = document.createElement('div');
   btn.id = '__snefe_xhs_btn__';
   btn.style.cssText = btnStyle('#ff2442');
-  btn.textContent = '采集到系统 (0)';
+  btn.style.display = 'block';
+  btn.textContent = '🌸 雪玲妃采集 (0)';
   btn.addEventListener('click', submitXhs);
   document.body.appendChild(btn);
 
   function updateXhsBtn() {
     const n = Object.keys(queue).length;
-    btn.textContent = `采集到系统 (${n})`;
-    btn.style.display = n > 0 ? 'block' : 'none';
+    btn.textContent = n > 0 ? `🌸 采集到系统 (${n})` : '🌸 雪玲妃采集 (0)';
+    btn.style.opacity = n > 0 ? '1' : '0.6';
+    btn.title = n > 0 ? '点击入库' : '浏览笔记时自动采集，点开笔记后数字会增加';
   }
 
   async function submitXhs() {
@@ -133,6 +135,7 @@ async function initShop() {
   const btn = document.createElement('div');
   btn.id = '__snefe_shop_btn__';
   btn.style.cssText = btnStyle('#ff6900');
+  btn.style.display = 'block';   // 修复：去掉默认 display:none
   btn.textContent = `🛒 采集图片 (${shopImages.length})`;
   btn.addEventListener('click', () => {
     if (shopPanel) { shopPanel.remove(); shopPanel = null; return; }
